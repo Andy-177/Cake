@@ -1,52 +1,62 @@
 import cakelib
 
+# 消息回调函数
+def on_message(msg):
+    """处理接收到的消息"""
+    print(f"\n收到消息: {msg}")
+    if msg['type'] == 'private':
+        print(f"私信 - 来自: {msg['source_id']}, 内容: {msg['text']}")
+    elif msg['type'] == 'broadcast':
+        print(f"广播 - 来自: {msg['source_id']}, 内容: {msg['text']}")
+    elif msg['type'] == 'group':
+        print(f"群组 - 群组: {msg['group_id']}, 来自: {msg['source_id']}, 内容: {msg['text']}")
+
 # 1. 连接服务器
-success, msg = cakelib.connect("127.0.0.1:9966")
-if not success:
-    print(f"连接失败: {msg}")
+if cakelib.connect("127.0.0.1:9966"):
+    print("连接成功！")
+    
+    # 2. 设置消息回调
+    cakelib.set_callback(on_message)
+    
+    # 3. 获取客户端ID
+    client_id = cakelib.getid()
+    print(f"客户端ID: {client_id}")
+    
+    # 4. 发送点对点消息
+    target_id = "00:00:00:00:00:00:00:01"  # 替换为实际目标ID
+    cakelib.send(target_id, "你好！")
+    
+    # 5. 广播消息
+    cakelib.broadcast("这是一条广播消息！")
+    
+    # 6. 获取在线列表
+    online_ids = cakelib.list()
+    print(f"在线客户端: {online_ids}")
+    
+    # 7. 注册群组
+    group_id = cakelib.registergroup([client_id])  # 初始成员包含自己
+    if group_id:
+        print(f"注册群组成功: {group_id}")
+        
+        # 8. 发送群组消息
+        cakelib.groupsendtext(group_id, "大家好！这是群消息")
+        
+        # 9. 获取群组列表
+        group_list = cakelib.grouplist()
+        print(f"我的群组: {group_list}")
+        
+        # 10. 注销群组
+        # cakelib.unregistergroup(group_id)
+    
+    # 保持运行接收消息
+    try:
+        while True:
+            input("按回车退出...")
+            break
+    except KeyboardInterrupt:
+        pass
+    
+    # 11. 关闭连接
+    cakelib.close()
 else:
-    print(f"连接成功，客户端ID: {msg}")
-
-# 2. 注册群组
-member_ids = ["11:11:11:11:11:11:11:11", "22:22:22:22:22:22:22:22"]
-group_id, msg = cakelib.registergroup(member_ids)
-if group_id:
-    print(f"群组注册成功，ID: {group_id}")
-else:
-    print(f"群组注册失败: {msg}")
-
-# 3. 发送群组文本消息
-success, msg = cakelib.groupsendtext(group_id, "大家好！")
-if success:
-    print(f"文本消息发送成功: {msg}")
-else:
-    print(f"文本消息发送失败: {msg}")
-
-# 4. 发送二进制数据到群组
-binary_data = b"\x01\x02\x03\x04"
-success, msg = cakelib.groupsend(group_id, binary_data)
-if success:
-    print(f"二进制数据发送成功: {msg}")
-else:
-    print(f"二进制数据发送失败: {msg}")
-
-# 5. 获取群组列表
-group_list = cakelib.grouplist()
-if group_list is None:
-    print("暂无注册群组")
-else:
-    print(f"已注册群组: {group_list}")
-
-# 6. 获取在线ID列表
-online_ids = cakelib.list()
-print(f"在线客户端ID列表: {online_ids}")
-
-# 7. 注销群组
-success, msg = cakelib.unregistergroup(group_id)
-if success:
-    print(f"群组注销成功: {msg}")
-else:
-    print(f"群组注销失败: {msg}")
-
-# 8. 关闭连接
-cakelib.close()
+    print("连接失败！")

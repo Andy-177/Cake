@@ -1,230 +1,276 @@
+"""
+Cake 客户端通信库
+提供简单的 API 用于连接 Cake 服务器、发送消息、管理群组等功能
+"""
+
 import socket
 import threading
 import struct
+import sys
+from typing import Optional, Union, Callable, List, Dict, Any
+from dataclasses import dataclass
 import time
-import json
-from typing import Optional, Union, Tuple, Any, List, Dict
 
-# 全局常量
-BUFFER_SIZE = 4096
-ID_LENGTH = 8
-BROADCAST_ID = b'\xff' * ID_LENGTH
-SERVER_RESERVED_ID = b'\x00' * ID_LENGTH  # Cake服务器保留ID
+# 常量定义
+CAKE_CLIENT_HOST = "127.0.0.1"
+CAKE_CLIENT_PORT = 9966
+CAKE_BUFFER_SIZE = 4096
+CAKE_ID_LENGTH = 8
+CAKE_SERVER_RESERVED_ID = b'\x00' * CAKE_ID_LENGTH
+CAKE_BROADCAST_ID = b'\xff' * CAKE_ID_LENGTH
+CAKE_PACKET_HEARTBEAT = 0x04
+CAKE_PACKET_ID_REQUEST = 0x01
+CAKE_PACKET_ID_RESPONSE = 0x02
+CAKE_PACKET_BUSINESS = 0x03
+CAKE_PACKET_GROUP_REGISTER = 0x05
+CAKE_PACKET_GROUP_BUSINESS = 0x06
+CAKE_PACKET_GROUP_RESPONSE = 0x07
+CAKE_PACKET_GROUP_UNREGISTER = 0x08
 
-# 心跳配置
-HEARTBEAT_INTERVAL = 5    # 每5秒发一次心跳
-HEARTBEAT_TIMEOUT = 20    # 20秒没收到心跳回应则断连（大于HEARTBEAT_INTERVAL*3）
-PACKET_HEARTBEAT = 0x04   # 心跳包类型
-PACKET_ID_REQUEST = 0x01  # ID请求包类型
-PACKET_ID_RESPONSE = 0x02 # ID响应包类型
-PACKET_MESSAGE = 0x03     # 业务消息包类型
-# 新增群组相关包类型
-PACKET_GROUP_REGISTER = 0x05    # 注册群组包类型
-PACKET_GROUP_RESPONSE = 0x07    # 群组ID响应包类型
-PACKET_GROUP_MESSAGE = 0x06     # 群组消息包类型
-PACKET_GROUP_UNREGISTER = 0x08  # 注销群组包类型
+# 全局状态
+@dataclass
+class _CakeState:
+    socket: Optional[Any] = None  # Use Any to avoid type expression error
+    client_id: Optional[bytes] = None
+    stop_event: threading.Event = threading.Event()
+    callback: Optional[Callable[[Dict[str, Any]], None]] = None
+    recv_thread: Optional[threading.Thread] = None
+    heartbeat_thread: Optional[threading.Thread] = None
+    group_id_map: Dict[str, bytes] = None
+    response_queue: Dict[str, Any] = None
+    response_lock: threading.Lock = threading.Lock()
 
-# 全局客户端实例
-_global_client: Optional['_CakeClient'] = None
+# 初始化全局状态
+_state = _CakeState(
+    group_id_map={},
+    response_queue={}
+)
 
+def _cake_format_id(id_bytes: bytes) -> str:
+    """将8字节ID转换为格式化字符串"""
+    return ':'.join(f'{b:02x}' for b in id_bytes)
 
-class _CakeClient:
-    """内部客户端实现类，对外不暴露"""
-    def __init__(self):
-        self.server_host: str = ""
-        self.server_port: int = 0
-        self.client_socket: Optional[socket.socket] = None
-        self.client_id: Optional[bytes] = None
-        self.running = False
-        self.recv_thread: Optional[threading.Thread] = None
-        self.heartbeat_thread: Optional[threading.Thread] = None
-        self.last_heartbeat_ack_time = time.time()
-        self.message_callback = None  # 消息回调函数
-        self.error_info: str = ""     # 错误信息存储
-        
-        # 新增：同步请求相关（用于grouplist/list等需要等待响应的操作）
-        self.sync_response_lock = threading.Lock()
-        self.sync_response_data = None
-        self.sync_response_event = threading.Event()
+def _cake_parse_id_string(id_str: str) -> Optional[bytes]:
+    """将格式化的ID字符串转换为8字节bytes"""
+    try:
+        parts = id_str.strip().split(':')
+        if len(parts) != 8:
+            return None
+        id_bytes = bytes(int(part, 16) for part in parts)
+        return id_bytes
+    except:
+        return None
 
-    def connect(self, server_addr: str) -> Tuple[bool, str]:
-        """
-        连接服务器
-        :param server_addr: 服务器地址，格式为 "ip:port" 或域名（如 "xxx.abc.xyz:9966"）
-        :return: (是否成功, 消息/错误信息)
-        """
-        # 解析服务器地址
+def _cake_create_packet(packet_type: int, body: bytes) -> bytes:
+    """创建数据包"""
+    header = struct.pack('!BI', packet_type, len(body))
+    return header + body
+
+def _cake_parse_packet(data: bytes) -> Optional[tuple]:
+    """解析数据包"""
+    if len(data) < 5:
+        return None
+    packet_type = data[0]
+    body_length = struct.unpack('!I', data[1:5])[0]
+    if len(data) < 5 + body_length:
+        return None
+    body = data[5:5+body_length]
+    return (packet_type, body)
+
+def _receive_handler():
+    """接收服务器消息的线程"""
+    recv_buffer = b''
+    while not _state.stop_event.is_set():
         try:
-            if ':' in server_addr:
-                host_port = server_addr.split(':', 1)
-                self.server_host = host_port[0]
-                self.server_port = int(host_port[1])
-            else:
-                # 默认端口9966
-                self.server_host = server_addr
-                self.server_port = 9966
-        except ValueError:
-            self.error_info = f"服务器地址格式错误: {server_addr}"
-            return False, self.error_info
-
-        try:
-            # 创建socket
-            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client_socket.settimeout(10)  # 连接阶段超时
-            self.client_socket.connect((self.server_host, self.server_port))
-            
-            # 发送ID请求包
-            id_request_packet = struct.pack('!BI', PACKET_ID_REQUEST, 0)
-            self.client_socket.sendall(id_request_packet)
-            
-            # 接收ID响应包
-            response_data = self.client_socket.recv(5 + ID_LENGTH)
-            if len(response_data) < 5 + ID_LENGTH:
-                self.error_info = "ID响应包不完整"
-                return False, self.error_info
-            
-            # 解析ID
-            packet_type, body_length = struct.unpack('!BI', response_data[:5])
-            if packet_type != PACKET_ID_RESPONSE or body_length != ID_LENGTH:
-                self.error_info = "无效的ID响应包"
-                return False, self.error_info
-            self.client_id = response_data[5:5+ID_LENGTH]
-            
-            # 取消recv超时
-            self.client_socket.settimeout(None)
-            
-            # 启动线程
-            self.running = True
-            self.last_heartbeat_ack_time = time.time()
-            self.recv_thread = threading.Thread(target=self._recv_messages)
-            self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
-            self.recv_thread.daemon = True
-            self.heartbeat_thread.daemon = True
-            self.recv_thread.start()
-            self.heartbeat_thread.start()
-            
-            return True, self.format_id(self.client_id)
-        except Exception as e:
-            self.error_info = f"连接失败: {str(e)}"
-            self.close()
-            return False, self.error_info
-
-    def _send_heartbeat(self):
-        """发送心跳包"""
-        if not self.running or not self.client_socket:
-            return
-        try:
-            heartbeat_packet = struct.pack('!BI', PACKET_HEARTBEAT, 0)
-            self.client_socket.sendall(heartbeat_packet)
-        except:
-            pass
-
-    def _heartbeat_loop(self):
-        """心跳循环：定时发送+超时检测"""
-        while self.running:
-            time.sleep(HEARTBEAT_INTERVAL)
-            # 发送心跳
-            self._send_heartbeat()
-            # 检测超时
-            elapsed = time.time() - self.last_heartbeat_ack_time
-            if elapsed > HEARTBEAT_TIMEOUT:
-                self.error_info = f"心跳超时（{HEARTBEAT_TIMEOUT}秒未收到回应）"
-                self.close()
+            if not _state.socket:
                 break
-
-    def _recv_messages(self):
-        """接收消息（无超时，阻塞式）"""
-        buffer = b''
-        while self.running:
-            try:
-                recv_data = self.client_socket.recv(BUFFER_SIZE)
-                if not recv_data:  # 服务器主动断开
-                    self.error_info = "服务器主动断开连接"
+            
+            recv_data = _state.socket.recv(CAKE_BUFFER_SIZE)
+            if not recv_data:
+                _state.stop_event.set()
+                break
+            
+            recv_buffer += recv_data
+            
+            # 解析数据包
+            while len(recv_buffer) >= 5:
+                packet_info = _cake_parse_packet(recv_buffer)
+                if not packet_info:
                     break
-                buffer += recv_data
                 
-                # 解析数据包
-                while len(buffer) >= 5:
-                    packet_type = buffer[0]
-                    body_length = struct.unpack('!I', buffer[1:5])[0]
-                    packet_total_length = 5 + body_length
-                    
-                    if len(buffer) < packet_total_length:
-                        break  # 数据包不完整，等后续数据
-                    
-                    # 处理完整包
-                    packet = buffer[:packet_total_length]
-                    buffer = buffer[packet_total_length:]
-                    
-                    # 心跳回应
-                    if packet_type == PACKET_HEARTBEAT:
-                        self.last_heartbeat_ack_time = time.time()
+                packet_type, body = packet_info
+                packet_total_length = 5 + len(body)
+                
+                # 处理ID响应
+                if packet_type == CAKE_PACKET_ID_RESPONSE:
+                    _state.client_id = body[:CAKE_ID_LENGTH]
+                    with _state.response_lock:
+                        _state.response_queue['id_response'] = _cake_format_id(_state.client_id)
+                
+                # 处理心跳响应
+                elif packet_type == CAKE_PACKET_HEARTBEAT:
+                    pass
+                
+                # 处理群组响应
+                elif packet_type == CAKE_PACKET_GROUP_RESPONSE:
+                    group_id = body[:CAKE_ID_LENGTH]
+                    group_id_str = _cake_format_id(group_id)
+                    _state.group_id_map[group_id_str] = group_id
+                    with _state.response_lock:
+                        _state.response_queue['group_register'] = group_id_str
+                
+                # 处理业务消息
+                elif packet_type == CAKE_PACKET_BUSINESS:
+                    if len(body) < 16:
+                        recv_buffer = recv_buffer[packet_total_length:]
                         continue
                     
-                    # 业务消息
-                    if packet_type == PACKET_MESSAGE:
-                        body = packet[5:]
-                        if len(body) >= 16:
-                            src_id = body[:8]
-                            dest_id = body[8:16]
-                            message = body[16:]
-                            src_id_str = self.format_id(src_id)
-                            dest_id_str = self.format_id(dest_id)
-                            
-                            # 处理同步请求的响应（grouplist/list/groupadd/groupdel）
-                            if src_id == SERVER_RESERVED_ID and dest_id == self.client_id:
-                                with self.sync_response_lock:
-                                    self.sync_response_data = message
-                                    self.sync_response_event.set()
-                                continue
-                            
-                            # 调用回调函数
-                            if self.message_callback:
-                                try:
-                                    self.message_callback(src_id_str, dest_id_str, message)
-                                except Exception as e:
-                                    self.error_info = f"消息回调函数执行错误: {str(e)}"
+                    src_id = body[:8]
+                    dest_id = body[8:16]
+                    message = body[16:]
                     
-                    # 群组注册响应
-                    elif packet_type == PACKET_GROUP_RESPONSE:
-                        body = packet[5:]
-                        if len(body) == ID_LENGTH:
-                            with self.sync_response_lock:
-                                self.sync_response_data = body  # 返回群组ID字节
-                                self.sync_response_event.set()
-            except Exception as e:
-                if self.running:
-                    self.error_info = f"接收消息异常: {str(e)}"
+                    # 处理列表响应
+                    if src_id == CAKE_SERVER_RESERVED_ID and message.startswith(b'list:'):
+                        online_ids = message.decode().split(':', 1)[1].split(',')
+                        with _state.response_lock:
+                            _state.response_queue['online_list'] = online_ids
+                    elif src_id == CAKE_SERVER_RESERVED_ID and message.startswith(b'grouplist:'):
+                        group_info = message.decode().split(':', 1)[1]
+                        with _state.response_lock:
+                            _state.response_queue['group_list'] = group_info
+                    else:
+                        # 调用回调函数
+                        if _state.callback:
+                            try:
+                                msg_data = {
+                                    'type': 'private' if dest_id != CAKE_BROADCAST_ID else 'broadcast',
+                                    'source_id': _cake_format_id(src_id),
+                                    'target_id': _cake_format_id(dest_id),
+                                    'data': message,
+                                    'text': message.decode('utf-8', errors='ignore')
+                                }
+                                _state.callback(msg_data)
+                            except Exception:
+                                pass
+                
+                # 处理群组消息
+                elif packet_type == CAKE_PACKET_GROUP_BUSINESS:
+                    if len(body) < 16:
+                        recv_buffer = recv_buffer[packet_total_length:]
+                        continue
+                    
+                    src_id = body[:8]
+                    group_id = body[8:16]
+                    message = body[16:]
+                    
+                    if _state.callback:
+                        try:
+                            msg_data = {
+                                'type': 'group',
+                                'source_id': _cake_format_id(src_id),
+                                'group_id': _cake_format_id(group_id),
+                                'data': message,
+                                'text': message.decode('utf-8', errors='ignore')
+                            }
+                            _state.callback(msg_data)
+                        except Exception:
+                            pass
+                
+                # 移除已处理的数据包
+                recv_buffer = recv_buffer[packet_total_length:]
+        
+        except Exception:
+            if not _state.stop_event.is_set():
                 break
-        
-        # 接收线程退出 = 连接断开
-        if self.running:
-            self.close()
 
-    def send_message(self, target_id_str: str, message: Union[str, bytes]) -> Tuple[bool, str]:
-        """
-        发送消息
-        :param target_id_str: 目标ID字符串（格式如 a1:b2:c3:d4:e5:f6:78:90）或 "broadcast"
-        :param message: 要发送的消息（字符串或字节流）
-        :return: (是否成功, 消息/错误信息)
-        """
-        if not self.running or not self.client_socket or not self.client_id:
-            self.error_info = "未连接到服务器或未获取ID"
-            return False, self.error_info
+def _send_heartbeat():
+    """发送心跳包"""
+    while not _state.stop_event.is_set():
+        try:
+            if _state.socket and _state.client_id:
+                heartbeat_packet = _cake_create_packet(CAKE_PACKET_HEARTBEAT, b'')
+                _state.socket.sendall(heartbeat_packet)
+            time.sleep(5.0)
+        except:
+            break
+
+def _wait_for_response(key: str, timeout: float = 5.0) -> Any:
+    """等待响应"""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        with _state.response_lock:
+            if key in _state.response_queue:
+                return _state.response_queue.pop(key)
+        time.sleep(0.1)
+    return None
+
+# 公开API
+def connect(server_addr: str = "127.0.0.1:9966") -> bool:
+    """
+    连接到Cake服务器
+    
+    Args:
+        server_addr: 服务器地址，格式为 "host:port"
+    
+    Returns:
+        bool: 连接成功返回True，失败返回False
+    """
+    # 清理之前的状态
+    close()
+    
+    try:
+        host, port = server_addr.split(':')
+        port = int(port)
+    except:
+        host = CAKE_CLIENT_HOST
+        port = CAKE_CLIENT_PORT
+    
+    try:
+        # 创建socket
+        _state.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _state.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _state.socket.connect((host, port))
+        _state.stop_event.clear()
         
+        # 发送ID请求
+        id_request_packet = _cake_create_packet(CAKE_PACKET_ID_REQUEST, b'')
+        _state.socket.sendall(id_request_packet)
+        
+        # 启动接收线程
+        _state.recv_thread = threading.Thread(target=_receive_handler, daemon=True)
+        _state.recv_thread.start()
+        
+        # 启动心跳线程
+        _state.heartbeat_thread = threading.Thread(target=_send_heartbeat, daemon=True)
+        _state.heartbeat_thread.start()
+        
+        # 等待ID响应
+        client_id = _wait_for_response('id_response', 10.0)
+        return client_id is not None
+        
+    except Exception:
+        close()
+        return False
+
+def send(target_id: str, message: Union[str, bytes]) -> bool:
+    """
+    发送消息给指定ID的客户端
+    
+    Args:
+        target_id: 目标客户端ID（格式化字符串）
+        message: 要发送的消息（字符串或字节）
+    
+    Returns:
+        bool: 发送成功返回True，失败返回False
+    """
+    if not _state.socket or not _state.client_id:
+        return False
+    
+    try:
         # 解析目标ID
-        if target_id_str.lower() == "broadcast":
-            target_id = BROADCAST_ID
-        else:
-            try:
-                target_id_parts = target_id_str.split(':')
-                if len(target_id_parts) != 8:
-                    self.error_info = "目标ID格式错误（需8组两位十六进制数）"
-                    return False, self.error_info
-                target_id = bytes(int(part, 16) for part in target_id_parts)
-            except ValueError:
-                self.error_info = "目标ID格式错误（非十六进制数）"
-                return False, self.error_info
+        target_id_bytes = _cake_parse_id_string(target_id)
+        if not target_id_bytes:
+            return False
         
         # 处理消息数据
         if isinstance(message, str):
@@ -232,547 +278,249 @@ class _CakeClient:
         else:
             message_bytes = message
         
-        # 构造业务消息包
-        body = self.client_id + target_id + message_bytes
-        body_length = len(body)
-        packet = struct.pack(f'!BI{body_length}s', PACKET_MESSAGE, body_length, body)
+        # 构造数据包
+        body = _state.client_id + target_id_bytes + message_bytes
+        packet = _cake_create_packet(CAKE_PACKET_BUSINESS, body)
         
-        # 发送
-        try:
-            self.client_socket.sendall(packet)
-            return True, f"消息发送成功，内容长度: {len(message_bytes)} 字节"
-        except Exception as e:
-            self.error_info = f"消息发送失败: {str(e)}"
-            self.close()
-            return False, self.error_info
+        _state.socket.sendall(packet)
+        return True
+        
+    except Exception:
+        return False
 
-    # ------------------------------
-    # 新增群组相关核心方法
-    # ------------------------------
-    def register_group(self, member_ids: List[str] = None) -> Tuple[Optional[str], str]:
-        """
-        注册群组（优化：支持空参数注册空群组）
-        :param member_ids: 群组成员ID列表（字符串格式），不传/传空则注册空群组
-        :return: (群组ID字符串/None, 错误信息/成功信息)
-        """
-        if not self.running or not self.client_socket or not self.client_id:
-            return None, "未连接到服务器或未获取ID"
-        
-        # 处理空参数，注册空群组
-        if member_ids is None:
-            member_ids = []
-        
-        # 验证并转换成员ID为字节
-        member_bytes_list = []
-        for member_id_str in member_ids:
-            try:
-                parts = member_id_str.split(':')
-                if len(parts) != 8:
-                    return None, f"成员ID格式错误: {member_id_str}（需8组两位十六进制数）"
-                member_bytes = bytes(int(part, 16) for part in parts)
-                member_bytes_list.append(member_bytes)
-            except ValueError:
-                return None, f"成员ID格式错误: {member_id_str}（非十六进制数）"
-        
-        # 构造群组注册包体（成员ID拼接，空列表则包体长度为0）
-        body = b''.join(member_bytes_list)
-        body_length = len(body)
-        packet = struct.pack(f'!BI{body_length}s', PACKET_GROUP_REGISTER, body_length, body)
-        
-        try:
-            # 重置同步响应
-            with self.sync_response_lock:
-                self.sync_response_data = None
-                self.sync_response_event.clear()
-            
-            # 发送注册包
-            self.client_socket.sendall(packet)
-            
-            # 等待响应（超时10秒）
-            if self.sync_response_event.wait(timeout=10):
-                with self.sync_response_lock:
-                    if self.sync_response_data and len(self.sync_response_data) == ID_LENGTH:
-                        group_id_str = self.format_id(self.sync_response_data)
-                        return group_id_str, f"群组注册成功，ID: {group_id_str}"
-                    else:
-                        return None, "未收到有效的群组ID响应"
-            else:
-                return None, "群组注册请求超时"
-        except Exception as e:
-            return None, f"群组注册失败: {str(e)}"
-
-    def unregister_group(self, group_id_str: str) -> Tuple[bool, str]:
-        """
-        注销群组
-        :param group_id_str: 群组ID字符串
-        :return: (是否成功, 错误信息/成功信息)
-        """
-        if not self.running or not self.client_socket or not self.client_id:
-            return False, "未连接到服务器或未获取ID"
-        
-        # 转换群组ID为字节
-        try:
-            parts = group_id_str.split(':')
-            if len(parts) != 8:
-                return False, "群组ID格式错误（需8组两位十六进制数）"
-            group_id = bytes(int(part, 16) for part in parts)
-        except ValueError:
-            return False, f"群组ID格式错误: {group_id_str}（非十六进制数）"
-        
-        # 构造注销包
-        body = group_id
-        body_length = len(body)
-        packet = struct.pack(f'!BI{body_length}s', PACKET_GROUP_UNREGISTER, body_length, body)
-        
-        try:
-            self.client_socket.sendall(packet)
-            return True, f"群组注销请求已发送: {group_id_str}"
-        except Exception as e:
-            return False, f"群组注销失败: {str(e)}"
-
-    def group_send(self, group_id_str: str, data: bytes) -> Tuple[bool, str]:
-        """
-        发送二进制数据到群组
-        :param group_id_str: 群组ID字符串
-        :param data: 二进制数据
-        :return: (是否成功, 错误信息/成功信息)
-        """
-        if not self.running or not self.client_socket or not self.client_id:
-            return False, "未连接到服务器或未获取ID"
-        
-        # 转换群组ID为字节
-        try:
-            parts = group_id_str.split(':')
-            if len(parts) != 8:
-                return False, "群组ID格式错误（需8组两位十六进制数）"
-            group_id = bytes(int(part, 16) for part in parts)
-        except ValueError:
-            return False, f"群组ID格式错误: {group_id_str}（非十六进制数）"
-        
-        # 构造群组消息包体（源ID + 群组ID + 数据）
-        body = self.client_id + group_id + data
-        body_length = len(body)
-        packet = struct.pack(f'!BI{body_length}s', PACKET_GROUP_MESSAGE, body_length, body)
-        
-        try:
-            self.client_socket.sendall(packet)
-            return True, f"群组消息发送成功，数据长度: {len(data)} 字节"
-        except Exception as e:
-            return False, f"群组消息发送失败: {str(e)}"
-
-    def group_send_text(self, group_id_str: str, text: str) -> Tuple[bool, str]:
-        """
-        发送文本消息到群组
-        :param group_id_str: 群组ID字符串
-        :param text: 文本字符串
-        :return: (是否成功, 错误信息/成功信息)
-        """
-        try:
-            data = text.encode('utf-8')
-            return self.group_send(group_id_str, data)
-        except Exception as e:
-            return False, f"文本消息编码失败: {str(e)}"
-
-    # ------------------------------
-    # 新增：群组添加/删除成员核心方法
-    # ------------------------------
-    def group_add_members(self, group_id_str: str, member_ids: List[str]) -> Tuple[bool, str]:
-        """
-        向群组添加成员
-        :param group_id_str: 群组ID字符串
-        :param member_ids: 要添加的成员ID列表（字符串格式）
-        :return: (是否成功, 错误信息/成功信息)
-        """
-        if not self.running or not self.client_socket or not self.client_id:
-            return False, "未连接到服务器或未获取ID"
-        
-        # 验证群组ID格式
-        try:
-            parts = group_id_str.split(':')
-            if len(parts) != 8:
-                return False, "群组ID格式错误（需8组两位十六进制数）"
-        except:
-            return False, f"群组ID格式错误: {group_id_str}"
-        
-        # 验证成员ID格式并拼接成指令字符串
-        member_str = ','.join([m.strip() for m in member_ids if m.strip()])
-        if not member_str:
-            return False, "成员列表不能为空"
-        
-        # 构造add指令
-        cmd = f"{group_id_str} add {member_str}"
-        
-        try:
-            # 重置同步响应
-            with self.sync_response_lock:
-                self.sync_response_data = None
-                self.sync_response_event.clear()
-            
-            # 发送指令到服务器保留ID
-            success, msg = self.send_message(self.format_id(SERVER_RESERVED_ID), cmd)
-            if not success:
-                return False, msg
-            
-            # 等待响应（超时10秒）
-            if self.sync_response_event.wait(timeout=10):
-                with self.sync_response_lock:
-                    response = self.sync_response_data.decode('utf-8') if self.sync_response_data else ""
-                    if response == "ok":
-                        return True, f"成员添加成功，已向群组 {group_id_str} 添加 {len(member_ids)} 个成员"
-                    elif response == "null":
-                        return False, f"群组不存在: {group_id_str}"
-                    else:
-                        return False, f"添加成员失败，服务器响应: {response}"
-            else:
-                return False, "添加成员请求超时"
-        except Exception as e:
-            return False, f"添加成员失败: {str(e)}"
-
-    def group_del_members(self, group_id_str: str, member_ids: List[str]) -> Tuple[bool, str]:
-        """
-        从群组删除成员
-        :param group_id_str: 群组ID字符串
-        :param member_ids: 要删除的成员ID列表（字符串格式）
-        :return: (是否成功, 错误信息/成功信息)
-        """
-        if not self.running or not self.client_socket or not self.client_id:
-            return False, "未连接到服务器或未获取ID"
-        
-        # 验证群组ID格式
-        try:
-            parts = group_id_str.split(':')
-            if len(parts) != 8:
-                return False, "群组ID格式错误（需8组两位十六进制数）"
-        except:
-            return False, f"群组ID格式错误: {group_id_str}"
-        
-        # 验证成员ID格式并拼接成指令字符串
-        member_str = ','.join([m.strip() for m in member_ids if m.strip()])
-        if not member_str:
-            return False, "成员列表不能为空"
-        
-        # 构造del指令
-        cmd = f"{group_id_str} del {member_str}"
-        
-        try:
-            # 重置同步响应
-            with self.sync_response_lock:
-                self.sync_response_data = None
-                self.sync_response_event.clear()
-            
-            # 发送指令到服务器保留ID
-            success, msg = self.send_message(self.format_id(SERVER_RESERVED_ID), cmd)
-            if not success:
-                return False, msg
-            
-            # 等待响应（超时10秒）
-            if self.sync_response_event.wait(timeout=10):
-                with self.sync_response_lock:
-                    response = self.sync_response_data.decode('utf-8') if self.sync_response_data else ""
-                    if response == "ok":
-                        return True, f"成员删除成功，已从群组 {group_id_str} 删除 {len(member_ids)} 个成员"
-                    elif response == "null":
-                        return False, f"群组不存在: {group_id_str}"
-                    else:
-                        return False, f"删除成员失败，服务器响应: {response}"
-            else:
-                return False, "删除成员请求超时"
-        except Exception as e:
-            return False, f"删除成员失败: {str(e)}"
-
-    def get_group_list(self) -> Optional[Dict]:
-        """
-        获取当前客户端注册的群组列表
-        :return: 群组字典（{群组ID: [成员ID列表]}）/None（无群组）
-        """
-        if not self.running or not self.client_socket or not self.client_id:
-            return None
-        
-        # 发送grouplist请求
-        success, msg = self.send_message(self.format_id(SERVER_RESERVED_ID), "grouplist")
-        if not success:
-            return None
-        
-        # 等待响应（超时10秒）
-        with self.sync_response_lock:
-            self.sync_response_data = None
-            self.sync_response_event.clear()
-        
-        if not self.sync_response_event.wait(timeout=10):
-            return None
-        
-        # 解析响应
-        with self.sync_response_lock:
-            response_data = self.sync_response_data
-        
-        if not response_data:
-            return None
-        
-        try:
-            # 解码JSON
-            json_str = response_data.decode('utf-8')
-            group_data = json.loads(json_str)
-            return group_data if group_data is not None else None
-        except json.JSONDecodeError:
-            return None
-
-    def get_online_id_list(self) -> List[str]:
-        """
-        获取所有在线客户端ID列表
-        :return: ID字符串列表（空列表表示无在线客户端或请求失败）
-        """
-        if not self.running or not self.client_socket or not self.client_id:
-            return []
-        
-        # 发送list请求
-        success, msg = self.send_message(self.format_id(SERVER_RESERVED_ID), "list")
-        if not success:
-            return []
-        
-        # 等待响应（超时10秒）
-        with self.sync_response_lock:
-            self.sync_response_data = None
-            self.sync_response_event.clear()
-        
-        if not self.sync_response_event.wait(timeout=10):
-            return []
-        
-        # 解析响应
-        with self.sync_response_lock:
-            response_data = self.sync_response_data
-        
-        if not response_data:
-            return []
-        
-        try:
-            id_str = response_data.decode('utf-8').strip()
-            if not id_str:
-                return []
-            # 按逗号分割ID列表
-            id_list = [id_part.strip() for id_part in id_str.split(',') if id_part.strip()]
-            return id_list
-        except:
-            return []
-
-    def get_client_id(self) -> Tuple[Optional[str], str]:
-        """
-        获取客户端ID（字符串格式）
-        :return: (客户端ID/None, 错误信息/空字符串)
-        """
-        if not self.client_id:
-            self.error_info = "未获取到客户端ID"
-            return None, self.error_info
-        return self.format_id(self.client_id), ""
-
-    def close(self) -> None:
-        """关闭客户端"""
-        if not self.running:
-            return
-        self.running = False
-        # 关闭socket
-        if self.client_socket:
-            try:
-                self.client_socket.shutdown(socket.SHUT_RDWR)
-                self.client_socket.close()
-            except:
-                pass
-        self.client_id = None
-
-    @staticmethod
-    def format_id(id_bytes: bytes) -> str:
-        """将字节ID格式化为字符串"""
-        return ':'.join(f'{b:02x}' for b in id_bytes)
-
-    def set_message_callback(self, callback) -> None:
-        """设置消息接收回调函数"""
-        self.message_callback = callback
-
-
-# ------------------------------
-# 对外暴露的API接口
-# ------------------------------
-def connect(server_addr: str) -> Tuple[bool, str]:
-    """
-    连接到Cake服务器
-    :param server_addr: 服务器地址，格式为 "ip:port" 或域名（如 "127.0.0.1:9966" 或 "xxx.abc.xyz"）
-    :return: (是否成功, 消息/错误信息)
-    """
-    global _global_client
-    if _global_client and _global_client.running:
-        _global_client.close()
-    
-    _global_client = _CakeClient()
-    return _global_client.connect(server_addr)
-
-
-def send(target_id: str, message: Union[str, bytes]) -> Tuple[bool, str]:
-    """
-    发送消息给指定ID的客户端
-    :param target_id: 目标客户端ID（格式如 a1:b2:c3:d4:e5:f6:78:90）
-    :param message: 要发送的消息（字符串或字节流）
-    :return: (是否成功, 消息/错误信息)
-    """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return False, "未连接到服务器，请先调用connect()"
-    return _global_client.send_message(target_id, message)
-
-
-def broadcast(message: Union[str, bytes]) -> Tuple[bool, str]:
+def broadcast(message: Union[str, bytes]) -> bool:
     """
     广播消息给所有客户端
-    :param message: 要广播的消息（字符串或字节流）
-    :return: (是否成功, 消息/错误信息)
+    
+    Args:
+        message: 要广播的消息（字符串或字节）
+    
+    Returns:
+        bool: 发送成功返回True，失败返回False
     """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return False, "未连接到服务器，请先调用connect()"
-    return _global_client.send_message("broadcast", message)
+    return send(_cake_format_id(CAKE_BROADCAST_ID), message)
 
-
-def getid() -> Tuple[Optional[str], str]:
+def getid() -> Optional[str]:
     """
     获取当前客户端的ID
-    :return: (客户端ID字符串/None, 错误信息/空字符串)
+    
+    Returns:
+        str: 格式化的客户端ID，未连接返回None
     """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return None, "未连接到服务器"
-    return _global_client.get_client_id()
+    if _state.client_id:
+        return _cake_format_id(_state.client_id)
+    return None
 
+# 别名
+get_id = getid
 
-def set_callback(callback) -> None:
+def set_callback(callback: Callable[[Dict[str, Any]], None]) -> None:
     """
     设置消息接收回调函数
-    回调函数格式: callback(src_id: str, dest_id: str, message: bytes)
+    
+    Args:
+        callback: 回调函数，接收一个字典参数，包含消息类型、来源、内容等信息
     """
-    global _global_client
-    if _global_client:
-        _global_client.set_message_callback(callback)
-
+    _state.callback = callback
 
 def close() -> None:
     """关闭连接"""
-    global _global_client
-    if _global_client:
-        _global_client.close()
+    _state.stop_event.set()
+    
+    # 关闭socket
+    if _state.socket:
+        try:
+            _state.socket.close()
+        except:
+            pass
+        _state.socket = None
+    
+    # 重置状态
+    _state.client_id = None
+    _state.group_id_map.clear()
+    with _state.response_lock:
+        _state.response_queue.clear()
 
-# ------------------------------
-# 新增群组相关API
-# ------------------------------
-def registergroup(member_ids: List[str] = None) -> Tuple[Optional[str], str]:
+def registergroup(member_ids: List[str] = None) -> Optional[str]:
     """
-    注册群组（支持空参数注册空群组）
-    :param member_ids: 群组成员ID列表（字符串格式，如 ["11:11:11:11:11:11:11:11", ...]），不传则注册空群组
-    :return: (群组ID字符串/None, 错误信息/成功信息)
+    注册群组
+    
+    Args:
+        member_ids: 初始成员ID列表（可选）
+    
+    Returns:
+        str: 新注册的群组ID，失败返回None
     """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return None, "未连接到服务器，请先调用connect()"
-    return _global_client.register_group(member_ids)
+    if not _state.socket or not _state.client_id:
+        return None
+    
+    try:
+        # 发送群组注册请求
+        packet = _cake_create_packet(CAKE_PACKET_GROUP_REGISTER, b'')
+        _state.socket.sendall(packet)
+        
+        # 等待群组ID响应
+        group_id = _wait_for_response('group_register', 10.0)
+        if not group_id:
+            return None
+        
+        # 添加初始成员
+        if member_ids and len(member_ids) > 0:
+            member_ids_str = ','.join(member_ids)
+            message = f"{group_id} add {member_ids_str}"
+            body = _state.client_id + CAKE_SERVER_RESERVED_ID + message.encode('utf-8')
+            packet = _cake_create_packet(CAKE_PACKET_BUSINESS, body)
+            _state.socket.sendall(packet)
+        
+        return group_id
+        
+    except Exception:
+        return None
 
-
-def groupsend(group_id: str, data: bytes) -> Tuple[bool, str]:
+def groupsend(group_id: str, data: bytes) -> bool:
     """
     发送二进制数据到群组
-    :param group_id: 群组ID字符串
-    :param data: 二进制数据包
-    :return: (是否成功, 错误信息/成功信息)
+    
+    Args:
+        group_id: 群组ID（格式化字符串）
+        data: 要发送的二进制数据
+    
+    Returns:
+        bool: 发送成功返回True，失败返回False
     """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return False, "未连接到服务器，请先调用connect()"
-    return _global_client.group_send(group_id, data)
+    if not _state.socket or not _state.client_id:
+        return False
+    
+    try:
+        # 解析群组ID
+        group_id_bytes = _cake_parse_id_string(group_id)
+        if not group_id_bytes:
+            return False
+        
+        # 构造数据包
+        body = _state.client_id + group_id_bytes + data
+        packet = _cake_create_packet(CAKE_PACKET_GROUP_BUSINESS, body)
+        
+        _state.socket.sendall(packet)
+        return True
+        
+    except Exception:
+        return False
 
+# 别名
+group_send = groupsend
 
-def groupsendtext(group_id: str, text: str) -> Tuple[bool, str]:
+def groupsendtext(group_id: str, text: str) -> bool:
     """
     发送文本消息到群组
-    :param group_id: 群组ID字符串
-    :param text: 文本字符串
-    :return: (是否成功, 错误信息/成功信息)
+    
+    Args:
+        group_id: 群组ID（格式化字符串）
+        text: 要发送的文本消息
+    
+    Returns:
+        bool: 发送成功返回True，失败返回False
     """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return False, "未连接到服务器，请先调用connect()"
-    return _global_client.group_send_text(group_id, text)
+    return groupsend(group_id, text.encode('utf-8'))
 
+# 别名
+group_send_text = groupsendtext
 
-def unregistergroup(group_id: str) -> Tuple[bool, str]:
+def unregistergroup(group_id: str) -> bool:
     """
     注销群组
-    :param group_id: 群组ID字符串
-    :return: (是否成功, 错误信息/成功信息)
+    
+    Args:
+        group_id: 要注销的群组ID
+    
+    Returns:
+        bool: 注销成功返回True，失败返回False
     """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return False, "未连接到服务器，请先调用connect()"
-    return _global_client.unregister_group(group_id)
+    if not _state.socket or not _state.client_id:
+        return False
+    
+    try:
+        # 解析群组ID
+        group_id_bytes = _cake_parse_id_string(group_id)
+        if not group_id_bytes:
+            return False
+        
+        # 构造数据包
+        packet = _cake_create_packet(CAKE_PACKET_GROUP_UNREGISTER, group_id_bytes)
+        _state.socket.sendall(packet)
+        
+        # 从本地缓存移除
+        if group_id in _state.group_id_map:
+            del _state.group_id_map[group_id]
+        
+        return True
+        
+    except Exception:
+        return False
 
-# ------------------------------
-# 新增：groupadd/groupdel 对外API
-# ------------------------------
-def groupadd(group_id: str, member_ids: List[str]) -> Tuple[bool, str]:
-    """
-    向群组添加成员
-    :param group_id: 群组ID字符串
-    :param member_ids: 要添加的成员ID列表（字符串格式）
-    :return: (是否成功, 错误信息/成功信息)
-    """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return False, "未连接到服务器，请先调用connect()"
-    return _global_client.group_add_members(group_id, member_ids)
+# 别名
+unregister_group = unregistergroup
 
-
-def groupdel(group_id: str, member_ids: List[str]) -> Tuple[bool, str]:
-    """
-    从群组删除成员
-    :param group_id: 群组ID字符串
-    :param member_ids: 要删除的成员ID列表（字符串格式）
-    :return: (是否成功, 错误信息/成功信息)
-    """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return False, "未连接到服务器，请先调用connect()"
-    return _global_client.group_del_members(group_id, member_ids)
-
-def grouplist() -> Optional[Dict]:
+def grouplist() -> Optional[str]:
     """
     获取当前客户端注册的群组列表
-    :return: 群组字典（{群组ID: [成员ID列表]}）/None（无群组或请求失败）
+    
+    Returns:
+        str: 群组列表信息，未连接返回None
     """
-    global _global_client
-    if not _global_client or not _global_client.running:
+    if not _state.socket or not _state.client_id:
         return None
-    return _global_client.get_group_list()
+    
+    try:
+        # 发送群组列表请求
+        body = _state.client_id + CAKE_SERVER_RESERVED_ID + b"grouplist"
+        packet = _cake_create_packet(CAKE_PACKET_BUSINESS, body)
+        _state.socket.sendall(packet)
+        
+        # 等待响应
+        return _wait_for_response('group_list', 10.0)
+        
+    except Exception:
+        return None
 
+# 别名
+group_list = grouplist
 
-def list() -> List[str]:
+def list() -> Optional[List[str]]:
     """
     获取所有在线客户端ID列表
-    :return: ID字符串列表（空列表表示无在线客户端或请求失败）
+    
+    Returns:
+        List[str]: 在线客户端ID列表，未连接返回None
     """
-    global _global_client
-    if not _global_client or not _global_client.running:
-        return []
-    return _global_client.get_online_id_list()
+    if not _state.socket or not _state.client_id:
+        return None
+    
+    try:
+        # 发送列表请求
+        body = _state.client_id + CAKE_SERVER_RESERVED_ID + b"list"
+        packet = _cake_create_packet(CAKE_PACKET_BUSINESS, body)
+        _state.socket.sendall(packet)
+        
+        # 等待响应
+        return _wait_for_response('online_list', 10.0)
+        
+    except Exception:
+        return None
 
-# 兼容别名
-get_id = getid
-group_send = groupsend
-group_send_text = groupsendtext
-unregister_group = unregistergroup
-group_list = grouplist
+# 别名
 online_list = list
-group_add = groupadd  # 兼容驼峰命名
-group_del = groupdel  # 兼容驼峰命名
 
-# 模块导出
+# 清理函数
+def __del__():
+    """析构函数，确保关闭连接"""
+    close()
+
+# 导出的API列表
 __all__ = [
-    'connect', 'send', 'broadcast', 'getid', 'get_id', 'set_callback', 'close',
-    'registergroup', 'groupsend', 'groupsendtext', 'unregistergroup', 'grouplist', 'list',
-    'groupadd', 'groupdel',  # 新增导出
-    'group_send', 'group_send_text', 'unregister_group', 'group_list', 'online_list',
-    'group_add', 'group_del'  # 兼容别名导出
+    'connect', 'send', 'broadcast', 'getid', 'get_id',
+    'set_callback', 'close', 'registergroup', 'groupsend',
+    'group_send', 'groupsendtext', 'group_send_text',
+    'unregistergroup', 'unregister_group', 'grouplist',
+    'group_list', 'list', 'online_list'
 ]
