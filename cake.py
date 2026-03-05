@@ -57,6 +57,18 @@ def cake_parse_packet(data: bytes) -> Optional[tuple]:
     body = data[5:5+body_length]
     return (packet_type, body)
 
+def cake_parse_id_string(id_str: str) -> Optional[bytes]:
+    """将格式化的ID字符串（如xx:xx:xx:xx:xx:xx:xx:xx）转换为8字节bytes"""
+    try:
+        parts = id_str.strip().split(':')
+        if len(parts) != 8:
+            return None
+        # 转换为16进制字节
+        id_bytes = bytes(int(part, 16) for part in parts)
+        return id_bytes
+    except:
+        return None
+
 def cake_recycle_client_groups(client_id: bytes):
     """回收指定客户端创建的所有群组"""
     if not client_id:
@@ -125,7 +137,34 @@ def cake_handle_client_connection(client_socket: socket.socket, client_address):
                         formatted_id = ':'.join(f'{b:02x}' for b in client_id)
                         print(f"[Cake服务器] 为客户端 {client_address} 分配ID: {formatted_id}")
                     
-                    # 处理业务消息（含grouplist、list指令）
+                    # 处理群组注册（无包体也可注册）
+                    elif packet_type == CAKE_PACKET_GROUP_REGISTER and client_id is not None:
+                        # 无论包体是否为空，都生成群组ID（兼容原有带成员的注册逻辑）
+                        with cake_group_id_lock:
+                            group_id = cake_generate_unique_group_id()
+                            # 解析包体中的成员（如果有），无包体则创建空群组
+                            valid_members = set()
+                            if len(body) > 0 and len(body) % CAKE_ID_LENGTH == 0:
+                                with cake_id_pool_lock:
+                                    members = [body[i:i+CAKE_ID_LENGTH] for i in range(0, len(body), CAKE_ID_LENGTH)]
+                                    for member_id in members:
+                                        if member_id not in (CAKE_SERVER_RESERVED_ID, CAKE_BROADCAST_ID) and member_id in cake_client_connections:
+                                            valid_members.add(member_id)
+                            # 存储群组信息
+                            cake_groups[group_id] = valid_members
+                            if client_id not in cake_client_created_groups:
+                                cake_client_created_groups[client_id] = set()
+                            cake_client_created_groups[client_id].add(group_id)
+                        
+                        # 发送群组ID响应
+                        response_header = struct.pack('!BI', CAKE_PACKET_GROUP_RESPONSE, CAKE_ID_LENGTH)
+                        response_packet = response_header + group_id
+                        client_socket.sendall(response_packet)
+                        formatted_group_id = ':'.join(f'{b:02x}' for b in group_id)
+                        formatted_members = [':'.join(f'{b:02x}' for b in mid) for mid in valid_members]
+                        print(f"[Cake服务器] 客户端 {client_address} 注册群组 {formatted_group_id}，成员: {formatted_members if formatted_members else '无'}")
+                    
+                    # 处理业务消息（含grouplist、list、添加/删除群成员指令）
                     elif packet_type == CAKE_PACKET_BUSINESS:
                         if client_id is None or len(body) < 16:
                             print(f"[Cake服务器] 客户端 {client_address} 业务消息格式错误/未分配ID")
@@ -169,7 +208,7 @@ def cake_handle_client_connection(client_socket: socket.socket, client_address):
                             recv_buffer = recv_buffer[packet_total_length:]
                             continue
                         
-                        # 新增：处理list指令（返回所有在线客户端ID列表）
+                        # 处理list指令（返回所有在线客户端ID列表）
                         elif dest_id == CAKE_SERVER_RESERVED_ID and message.decode('utf-8', errors='ignore').strip().lower() == "list":
                             print(f"[Cake服务器] 客户端 {formatted_src_id} 请求查询所有在线客户端ID列表")
                             # 获取所有在线客户端ID并格式化
@@ -192,6 +231,72 @@ def cake_handle_client_connection(client_socket: socket.socket, client_address):
                             print(f"[Cake服务器] 已向客户端 {formatted_src_id} 返回在线ID列表: {id_list_str}")
                             recv_buffer = recv_buffer[packet_total_length:]
                             continue
+                        
+                        # 处理添加/删除群成员指令
+                        elif dest_id == CAKE_SERVER_RESERVED_ID:
+                            msg_str = message.decode('utf-8', errors='ignore').strip()
+                            response_msg = "null"
+                            # 处理添加群成员指令（格式：群组ID add ID1,ID2,...）
+                            if ' add ' in msg_str:
+                                # 解析指令
+                                parts = msg_str.split(' add ')
+                                if len(parts) == 2:
+                                    group_id_str = parts[0].strip()
+                                    member_ids_str = parts[1].strip()
+                                    
+                                    # 转换群组ID
+                                    group_id = cake_parse_id_string(group_id_str)
+                                    if group_id:
+                                        with cake_group_id_lock:
+                                            # 检查群组是否存在
+                                            if group_id in cake_groups:
+                                                # 解析成员ID列表
+                                                member_id_str_list = member_ids_str.split(',')
+                                                added_count = 0
+                                                for mid_str in member_id_str_list:
+                                                    mid = cake_parse_id_string(mid_str.strip())
+                                                    if mid and mid not in (CAKE_SERVER_RESERVED_ID, CAKE_BROADCAST_ID):
+                                                        # 添加到群组（去重）
+                                                        cake_groups[group_id].add(mid)
+                                                        added_count += 1
+                                                response_msg = "ok"
+                                                print(f"[Cake服务器] 客户端 {formatted_src_id} 向群组 {group_id_str} 添加了 {added_count} 个成员")
+                            # 新增：处理删除群成员指令（格式：群组ID del ID1,ID2,...）
+                            elif ' del ' in msg_str:
+                                # 解析指令
+                                parts = msg_str.split(' del ')
+                                if len(parts) == 2:
+                                    group_id_str = parts[0].strip()
+                                    member_ids_str = parts[1].strip()
+                                    
+                                    # 转换群组ID
+                                    group_id = cake_parse_id_string(group_id_str)
+                                    if group_id:
+                                        with cake_group_id_lock:
+                                            # 检查群组是否存在
+                                            if group_id in cake_groups:
+                                                # 解析成员ID列表
+                                                member_id_str_list = member_ids_str.split(',')
+                                                deleted_count = 0
+                                                for mid_str in member_id_str_list:
+                                                    mid = cake_parse_id_string(mid_str.strip())
+                                                    if mid and mid in cake_groups[group_id]:
+                                                        # 从群组中删除成员
+                                                        cake_groups[group_id].remove(mid)
+                                                        deleted_count += 1
+                                                response_msg = "ok"
+                                                print(f"[Cake服务器] 客户端 {formatted_src_id} 从群组 {group_id_str} 删除了 {deleted_count} 个成员")
+                            
+                            # 发送添加/删除指令的响应
+                            if ' add ' in msg_str or ' del ' in msg_str:
+                                response_msg_bytes = response_msg.encode('utf-8')
+                                response_body = CAKE_SERVER_RESERVED_ID + client_id + response_msg_bytes
+                                response_body_length = len(response_body)
+                                response_packet = struct.pack(f'!BI{response_body_length}s', CAKE_PACKET_BUSINESS, response_body_length, response_body)
+                                client_socket.sendall(response_packet)
+                                print(f"[Cake服务器] 已向客户端 {formatted_src_id} 返回{'添加' if ' add ' in msg_str else '删除'}群成员响应: {response_msg}")
+                                recv_buffer = recv_buffer[packet_total_length:]
+                                continue
                         
                         # 广播消息处理
                         if dest_id == CAKE_BROADCAST_ID:
@@ -223,36 +328,6 @@ def cake_handle_client_connection(client_socket: socket.socket, client_address):
                         except Exception as e:
                             print(f"[Cake服务器] 客户端 {client_address} 心跳响应失败: {e}")
                             break
-                    
-                    # 处理群组注册
-                    elif packet_type == CAKE_PACKET_GROUP_REGISTER:
-                        if client_id is None or len(body) % CAKE_ID_LENGTH != 0:
-                            print(f"[Cake服务器] 客户端 {client_address} 群组注册格式错误/未分配ID")
-                            break
-                        
-                        # 解析并过滤有效成员ID
-                        members = [body[i:i+CAKE_ID_LENGTH] for i in range(0, len(body), CAKE_ID_LENGTH)]
-                        valid_members = set()
-                        with cake_id_pool_lock:
-                            for member_id in members:
-                                if member_id not in (CAKE_SERVER_RESERVED_ID, CAKE_BROADCAST_ID) and member_id in cake_client_connections:
-                                    valid_members.add(member_id)
-                        
-                        # 生成群组ID并存储
-                        with cake_group_id_lock:
-                            group_id = cake_generate_unique_group_id()
-                            cake_groups[group_id] = valid_members
-                            if client_id not in cake_client_created_groups:
-                                cake_client_created_groups[client_id] = set()
-                            cake_client_created_groups[client_id].add(group_id)
-                        
-                        # 发送群组ID响应
-                        response_header = struct.pack('!BI', CAKE_PACKET_GROUP_RESPONSE, CAKE_ID_LENGTH)
-                        response_packet = response_header + group_id
-                        client_socket.sendall(response_packet)
-                        formatted_group_id = ':'.join(f'{b:02x}' for b in group_id)
-                        formatted_members = [':'.join(f'{b:02x}' for b in mid) for mid in valid_members]
-                        print(f"[Cake服务器] 客户端 {client_address} 注册群组 {formatted_group_id}，成员: {formatted_members}")
                     
                     # 处理群组消息
                     elif packet_type == CAKE_PACKET_GROUP_BUSINESS:

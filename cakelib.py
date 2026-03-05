@@ -171,7 +171,7 @@ class _CakeClient:
                             src_id_str = self.format_id(src_id)
                             dest_id_str = self.format_id(dest_id)
                             
-                            # 处理同步请求的响应（grouplist/list）
+                            # 处理同步请求的响应（grouplist/list/groupadd/groupdel）
                             if src_id == SERVER_RESERVED_ID and dest_id == self.client_id:
                                 with self.sync_response_lock:
                                     self.sync_response_data = message
@@ -249,14 +249,18 @@ class _CakeClient:
     # ------------------------------
     # 新增群组相关核心方法
     # ------------------------------
-    def register_group(self, member_ids: List[str]) -> Tuple[Optional[str], str]:
+    def register_group(self, member_ids: List[str] = None) -> Tuple[Optional[str], str]:
         """
-        注册群组
-        :param member_ids: 群组成员ID列表（字符串格式）
+        注册群组（优化：支持空参数注册空群组）
+        :param member_ids: 群组成员ID列表（字符串格式），不传/传空则注册空群组
         :return: (群组ID字符串/None, 错误信息/成功信息)
         """
         if not self.running or not self.client_socket or not self.client_id:
             return None, "未连接到服务器或未获取ID"
+        
+        # 处理空参数，注册空群组
+        if member_ids is None:
+            member_ids = []
         
         # 验证并转换成员ID为字节
         member_bytes_list = []
@@ -270,7 +274,7 @@ class _CakeClient:
             except ValueError:
                 return None, f"成员ID格式错误: {member_id_str}（非十六进制数）"
         
-        # 构造群组注册包体（成员ID拼接）
+        # 构造群组注册包体（成员ID拼接，空列表则包体长度为0）
         body = b''.join(member_bytes_list)
         body_length = len(body)
         packet = struct.pack(f'!BI{body_length}s', PACKET_GROUP_REGISTER, body_length, body)
@@ -368,6 +372,113 @@ class _CakeClient:
             return self.group_send(group_id_str, data)
         except Exception as e:
             return False, f"文本消息编码失败: {str(e)}"
+
+    # ------------------------------
+    # 新增：群组添加/删除成员核心方法
+    # ------------------------------
+    def group_add_members(self, group_id_str: str, member_ids: List[str]) -> Tuple[bool, str]:
+        """
+        向群组添加成员
+        :param group_id_str: 群组ID字符串
+        :param member_ids: 要添加的成员ID列表（字符串格式）
+        :return: (是否成功, 错误信息/成功信息)
+        """
+        if not self.running or not self.client_socket or not self.client_id:
+            return False, "未连接到服务器或未获取ID"
+        
+        # 验证群组ID格式
+        try:
+            parts = group_id_str.split(':')
+            if len(parts) != 8:
+                return False, "群组ID格式错误（需8组两位十六进制数）"
+        except:
+            return False, f"群组ID格式错误: {group_id_str}"
+        
+        # 验证成员ID格式并拼接成指令字符串
+        member_str = ','.join([m.strip() for m in member_ids if m.strip()])
+        if not member_str:
+            return False, "成员列表不能为空"
+        
+        # 构造add指令
+        cmd = f"{group_id_str} add {member_str}"
+        
+        try:
+            # 重置同步响应
+            with self.sync_response_lock:
+                self.sync_response_data = None
+                self.sync_response_event.clear()
+            
+            # 发送指令到服务器保留ID
+            success, msg = self.send_message(self.format_id(SERVER_RESERVED_ID), cmd)
+            if not success:
+                return False, msg
+            
+            # 等待响应（超时10秒）
+            if self.sync_response_event.wait(timeout=10):
+                with self.sync_response_lock:
+                    response = self.sync_response_data.decode('utf-8') if self.sync_response_data else ""
+                    if response == "ok":
+                        return True, f"成员添加成功，已向群组 {group_id_str} 添加 {len(member_ids)} 个成员"
+                    elif response == "null":
+                        return False, f"群组不存在: {group_id_str}"
+                    else:
+                        return False, f"添加成员失败，服务器响应: {response}"
+            else:
+                return False, "添加成员请求超时"
+        except Exception as e:
+            return False, f"添加成员失败: {str(e)}"
+
+    def group_del_members(self, group_id_str: str, member_ids: List[str]) -> Tuple[bool, str]:
+        """
+        从群组删除成员
+        :param group_id_str: 群组ID字符串
+        :param member_ids: 要删除的成员ID列表（字符串格式）
+        :return: (是否成功, 错误信息/成功信息)
+        """
+        if not self.running or not self.client_socket or not self.client_id:
+            return False, "未连接到服务器或未获取ID"
+        
+        # 验证群组ID格式
+        try:
+            parts = group_id_str.split(':')
+            if len(parts) != 8:
+                return False, "群组ID格式错误（需8组两位十六进制数）"
+        except:
+            return False, f"群组ID格式错误: {group_id_str}"
+        
+        # 验证成员ID格式并拼接成指令字符串
+        member_str = ','.join([m.strip() for m in member_ids if m.strip()])
+        if not member_str:
+            return False, "成员列表不能为空"
+        
+        # 构造del指令
+        cmd = f"{group_id_str} del {member_str}"
+        
+        try:
+            # 重置同步响应
+            with self.sync_response_lock:
+                self.sync_response_data = None
+                self.sync_response_event.clear()
+            
+            # 发送指令到服务器保留ID
+            success, msg = self.send_message(self.format_id(SERVER_RESERVED_ID), cmd)
+            if not success:
+                return False, msg
+            
+            # 等待响应（超时10秒）
+            if self.sync_response_event.wait(timeout=10):
+                with self.sync_response_lock:
+                    response = self.sync_response_data.decode('utf-8') if self.sync_response_data else ""
+                    if response == "ok":
+                        return True, f"成员删除成功，已从群组 {group_id_str} 删除 {len(member_ids)} 个成员"
+                    elif response == "null":
+                        return False, f"群组不存在: {group_id_str}"
+                    else:
+                        return False, f"删除成员失败，服务器响应: {response}"
+            else:
+                return False, "删除成员请求超时"
+        except Exception as e:
+            return False, f"删除成员失败: {str(e)}"
 
     def get_group_list(self) -> Optional[Dict]:
         """
@@ -549,10 +660,10 @@ def close() -> None:
 # ------------------------------
 # 新增群组相关API
 # ------------------------------
-def registergroup(member_ids: List[str]) -> Tuple[Optional[str], str]:
+def registergroup(member_ids: List[str] = None) -> Tuple[Optional[str], str]:
     """
-    注册群组
-    :param member_ids: 群组成员ID列表（字符串格式，如 ["11:11:11:11:11:11:11:11", "22:22:22:22:22:22:22:22"]）
+    注册群组（支持空参数注册空群组）
+    :param member_ids: 群组成员ID列表（字符串格式，如 ["11:11:11:11:11:11:11:11", ...]），不传则注册空群组
     :return: (群组ID字符串/None, 错误信息/成功信息)
     """
     global _global_client
@@ -598,6 +709,33 @@ def unregistergroup(group_id: str) -> Tuple[bool, str]:
         return False, "未连接到服务器，请先调用connect()"
     return _global_client.unregister_group(group_id)
 
+# ------------------------------
+# 新增：groupadd/groupdel 对外API
+# ------------------------------
+def groupadd(group_id: str, member_ids: List[str]) -> Tuple[bool, str]:
+    """
+    向群组添加成员
+    :param group_id: 群组ID字符串
+    :param member_ids: 要添加的成员ID列表（字符串格式）
+    :return: (是否成功, 错误信息/成功信息)
+    """
+    global _global_client
+    if not _global_client or not _global_client.running:
+        return False, "未连接到服务器，请先调用connect()"
+    return _global_client.group_add_members(group_id, member_ids)
+
+
+def groupdel(group_id: str, member_ids: List[str]) -> Tuple[bool, str]:
+    """
+    从群组删除成员
+    :param group_id: 群组ID字符串
+    :param member_ids: 要删除的成员ID列表（字符串格式）
+    :return: (是否成功, 错误信息/成功信息)
+    """
+    global _global_client
+    if not _global_client or not _global_client.running:
+        return False, "未连接到服务器，请先调用connect()"
+    return _global_client.group_del_members(group_id, member_ids)
 
 def grouplist() -> Optional[Dict]:
     """
@@ -627,10 +765,14 @@ group_send_text = groupsendtext
 unregister_group = unregistergroup
 group_list = grouplist
 online_list = list
+group_add = groupadd  # 兼容驼峰命名
+group_del = groupdel  # 兼容驼峰命名
 
 # 模块导出
 __all__ = [
     'connect', 'send', 'broadcast', 'getid', 'get_id', 'set_callback', 'close',
     'registergroup', 'groupsend', 'groupsendtext', 'unregistergroup', 'grouplist', 'list',
-    'group_send', 'group_send_text', 'unregister_group', 'group_list', 'online_list'
+    'groupadd', 'groupdel',  # 新增导出
+    'group_send', 'group_send_text', 'unregister_group', 'group_list', 'online_list',
+    'group_add', 'group_del'  # 兼容别名导出
 ]
