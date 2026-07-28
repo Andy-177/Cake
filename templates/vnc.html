@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>远程连接 - Cake</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding:32px 40px;min-height:100vh}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;max-width:960px;margin:0 auto}
+.card{padding:22px 20px;position:relative;text-decoration:none;color:inherit;display:block;transition:filter .2s}
+.card:hover{filter:brightness(.95)}
+.card .label{font-size:11px;color:#666;letter-spacing:1.5px;margin-bottom:16px;font-weight:500}
+.card .value{font-size:28px;font-weight:600;color:#111}
+.card .sub{font-size:11px;color:#999;margin-top:12px}
+.c9{background:#ffedd5}
+.c5{background:#fee2e2}
+.c1{background:#dbeafe}
+.c2{background:#fef3c7}
+.c3{background:#dcfce7}
+.c7{background:#e0e7ff}
+.c4{background:#f3e8ff}
+.c6{background:#cffafe}
+@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:500px){body{padding:20px}.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="grid">
+  <a class="card c9" href="/" style="grid-column:1/-1">
+    <div class="label">远程连接</div>
+    <div class="value">⚠ 无法连接</div>
+    <div class="sub">请检查以下配置信息</div>
+  </a>
+  {% for err in errors %}
+  <div class="card c5">
+    <div class="label">错误</div>
+    <div class="value" style="font-size:16px;color:#c53030">{{ err }}</div>
+  </div>
+  {% endfor %}
+  <div class="card c1">
+    <div class="label">当前 IP</div>
+    <div class="value" style="font-size:20px">{{ ip if ip else '未设置' }}</div>
+  </div>
+  <div class="card c3">
+    <div class="label">当前端口</div>
+    <div class="value" style="font-size:20px">{{ port if port else '未设置' }}</div>
+  </div>
+  <div class="card c2">
+    <div class="label">配置文件</div>
+    <div class="value" style="font-size:16px">config.json</div>
+    <div class="sub">修改后重启服务生效</div>
+  </div>
+  <div class="card c4">
+    <div class="label">WebSocket 端口</div>
+    <div class="value" style="font-size:20px">{{ wsport if wsport else '未设置' }}</div>
+  </div>
+  <a class="card c6" href="/">
+    <div class="label">操作</div>
+    <div class="value" style="font-size:20px">←</div>
+    <div class="sub">返回主页</div>
+  </a>
+</div>
+</body>
+</html>

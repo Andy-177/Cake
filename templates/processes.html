@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>进程管理器 - Cake</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding:24px 32px}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar h1{font-size:16px;font-weight:500;letter-spacing:2px;color:#222}
+.toggle-card{padding:8px 16px;cursor:pointer;transition:filter .2s;display:block;text-decoration:none;color:inherit}
+.toggle-card:hover{filter:brightness(.95)}
+.toggle-card.active{outline:2px solid #222;outline-offset:-2px}
+.toggle-card .label{font-size:9px;color:#666;letter-spacing:1px;font-weight:500}
+.toggle-card .value{font-size:14px;font-weight:600;color:#111}
+.back{font-size:12px;color:#999;text-decoration:none;letter-spacing:1px}
+.back:hover{color:#222}
+
+.sort-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px;overflow:hidden;max-height:300px;opacity:1;transition:max-height .3s ease,opacity .3s ease,margin-bottom .3s ease}
+.sort-grid.hidden{max-height:0;opacity:0;margin-bottom:0;pointer-events:none}
+.sort-card{padding:14px 16px;cursor:pointer;transition:filter .2s;position:relative;display:block;text-decoration:none;color:inherit}
+.sort-card:hover{filter:brightness(.95)}
+.sort-card.active{outline:2px solid #222;outline-offset:-2px}
+.sort-card .label{font-size:10px;color:#666;letter-spacing:1px;margin-bottom:6px;font-weight:500}
+.sort-card .value{font-size:16px;font-weight:600;color:#111}
+.dir-card{display:block}
+
+.c1{background:#dbeafe}
+.c2{background:#fef3c7}
+.c3{background:#dcfce7}
+.c4{background:#f3e8ff}
+.c6{background:#cffafe}
+.c7{background:#e0e7ff}
+
+.toolbar{display:flex;gap:12px;align-items:center;margin-bottom:16px}
+.search{flex:1;padding:10px 16px;border:1px solid #e5e5e5;font-size:13px;font-family:inherit;background:#fff;outline:none;transition:border-color .2s}
+.search:focus{border-color:#999}
+.count{font-size:11px;color:#999;letter-spacing:1px}
+
+.proc-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.proc-item{padding:16px;cursor:default;transition:filter .2s}
+.proc-item:hover{filter:brightness(.95)}
+.proc-item .proc-name{font-size:14px;font-weight:600;color:#111;margin-bottom:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proc-item .proc-row{display:flex;justify-content:space-between;font-size:11px;color:#666;margin-bottom:4px}
+.proc-item .proc-row span:last-child{font-weight:600;color:#333}
+.proc-item .kill-btn-grid{margin-top:8px}
+
+.proc-table{width:100%;background:#fff;border:1px solid #e5e5e5;border-collapse:collapse}
+.proc-table th{padding:12px 16px;font-size:10px;color:#999;letter-spacing:1.5px;font-weight:500;text-align:left;border-bottom:1px solid #e5e5e5;cursor:pointer;user-select:none;white-space:nowrap}
+.proc-table th:hover{color:#222}
+.proc-table th.sorted{color:#222}
+.proc-table td{padding:10px 16px;font-size:12px;color:#333;border-bottom:1px solid #f5f5f5;white-space:nowrap}
+.proc-table tr:hover td{background:#fafafa}
+.proc-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.proc-table .name{font-weight:500;color:#111}
+
+.status{display:inline-block;padding:2px 8px;border-radius:2px;font-size:10px;letter-spacing:.5px}
+.status-running{background:#dcfce7;color:#166534}
+.status-sleeping{background:#e0e7ff;color:#3730a3}
+.status-stopped{background:#fee2e2;color:#991b1b}
+.status-zombie{background:#fef3c7;color:#92400e}
+
+.kill-btn{padding:4px 12px;font-size:10px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;color:#999;cursor:pointer;letter-spacing:.5px;transition:all .2s}
+.kill-btn:hover{background:#fee2e2;color:#ef4444;border-color:#ef4444}
+.kill-btn:active{transform:scale(.95)}
+
+.toast{position:fixed;top:20px;right:20px;padding:10px 20px;font-size:12px;color:#fff;border-radius:2px;z-index:100;transition:opacity .3s}
+.toast-ok{background:#22c55e}
+.toast-err{background:#ef4444}
+
+.proc-grid.hidden{display:none}
+
+@media(max-width:900px){body{padding:16px}.sort-grid{grid-template-columns:repeat(3,1fr)}.proc-grid{grid-template-columns:repeat(2,1fr)}.topbar{flex-wrap:wrap;gap:8px}.topbar h1{font-size:14px}.toggle-card{padding:6px 12px}.toggle-card .value{font-size:12px}.col-user{display:none}.proc-table{font-size:11px}.proc-table th,.proc-table td{padding:8px 10px}.toolbar{flex-wrap:wrap}.search{min-width:0}}
+@media(max-width:500px){.sort-grid{grid-template-columns:repeat(2,1fr)}.proc-grid{grid-template-columns:1fr}.proc-table .name{max-width:80px;overflow:hidden;text-overflow:ellipsis}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-left">
+    <h1>进程管理器</h1>
+    <a class="toggle-card c7" id="sortToggle" href="javascript:void(0)">
+      <div class="value">排序方式 <span id="sortArrow" style="font-size:12px">▼</span></div>
+    </a>
+  </div>
+  <a class="back" href="/">← 返回面板</a>
+</div>
+
+<div class="sort-grid hidden" id="sortGrid">
+  <a class="sort-card c1 active" data-sort="pid" href="javascript:void(0)">
+    <div class="label sort-label">排序方式</div>
+    <div class="value">PID</div>
+  </a>
+  <a class="sort-card c3" data-sort="name" href="javascript:void(0)">
+    <div class="label sort-label">排序方式</div>
+    <div class="value">进程名</div>
+  </a>
+  <a class="sort-card c4" data-sort="cpu" href="javascript:void(0)">
+    <div class="label sort-label">排序方式</div>
+    <div class="value">CPU%</div>
+  </a>
+  <a class="sort-card c2" data-sort="mem" href="javascript:void(0)">
+    <div class="label sort-label">排序方式</div>
+    <div class="value">内存%</div>
+  </a>
+  <a class="sort-card c6 dir-card" id="dirBtn" href="javascript:void(0)">
+    <div class="label">排序方向</div>
+    <div class="value" id="dirText">正序 ↑</div>
+  </a>
+</div>
+
+<div class="toolbar">
+  <input class="search" id="search" placeholder="搜索进程名称或PID...">
+  <div class="count" id="count"></div>
+</div>
+
+<table class="proc-table" id="procTable">
+  <thead>
+    <tr>
+      <th data-sort="pid" class="sorted">PID</th>
+      <th data-sort="name">名称</th>
+      <th data-sort="cpu" class="num">CPU%</th>
+      <th data-sort="mem" class="num">内存%</th>
+      <th data-sort="status">状态</th>
+      <th data-sort="user" class="col-user">用户</th>
+      <th style="cursor:default"></th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div class="proc-grid hidden" id="procGrid"></div>
+
+<script>
+var currentSort='pid';
+var currentDir=true;
+var allProcs=[];
+
+function $(s){return document.getElementById(s)}
+
+function toast(msg,ok){
+  var t=document.createElement('div');
+  t.className='toast '+(ok?'toast-ok':'toast-err');
+  t.textContent=msg;
+  document.body.appendChild(t);
+  setTimeout(function(){t.style.opacity='0';setTimeout(function(){t.remove()},300)},1500);
+}
+
+function statusClass(s){
+  if(s==='running')return 'status-running';
+  if(s==='sleeping')return 'status-sleeping';
+  if(s==='stopped')return 'status-stopped';
+  if(s==='zombie')return 'status-zombie';
+  return '';
+}
+
+function statusText(s){
+  var map={running:'运行',sleeping:'休眠',stopped:'停止',zombie:'僵尸'};
+  return map[s]||s;
+}
+
+function updateDirText(){
+  $('dirText').textContent=currentDir?'正序 ↑':'倒序 ↓';
+}
+
+function getFiltered(){
+  var q=$('search').value.toLowerCase();
+  return allProcs.filter(function(p){
+    return !q||p.name.toLowerCase().indexOf(q)>=0||(''+p.pid).indexOf(q)>=0;
+  });
+}
+
+function render(){
+  var filtered=getFiltered();
+  var html='';
+  filtered.forEach(function(p){
+    html+='<tr>'+
+      '<td class="num">'+p.pid+'</td>'+
+      '<td class="name">'+p.name+'</td>'+
+      '<td class="num">'+p.cpu.toFixed(1)+'</td>'+
+      '<td class="num">'+p.mem.toFixed(1)+'</td>'+
+      '<td><span class="status '+statusClass(p.status)+'">'+statusText(p.status)+'</span></td>'+
+      '<td class="col-user">'+p.user+'</td>'+
+      '<td><button class="kill-btn" data-pid="'+p.pid+'" data-name="'+p.name+'">终止</button></td>'+
+    '</tr>';
+  });
+  $('tbody').innerHTML=html;
+
+  var ghtml='';
+  filtered.forEach(function(p){
+    var bg=statusClass(p.status)==='status-running'?'#dcfce7':statusClass(p.status)==='status-sleeping'?'#e0e7ff':statusClass(p.status)==='status-stopped'?'#fee2e2':'#fef3c7';
+    ghtml+='<div class="proc-item" style="background:'+bg+'">'+
+      '<div class="proc-name">'+p.name+'</div>'+
+      '<div class="proc-row"><span>PID</span><span>'+p.pid+'</span></div>'+
+      '<div class="proc-row"><span>CPU%</span><span>'+p.cpu.toFixed(1)+'</span></div>'+
+      '<div class="proc-row"><span>内存%</span><span>'+p.mem.toFixed(1)+'</span></div>'+
+      '<div class="proc-row"><span>状态</span><span>'+statusText(p.status)+'</span></div>'+
+      '<div class="proc-row"><span>用户</span><span>'+p.user+'</span></div>'+
+      '<button class="kill-btn kill-btn-grid" data-pid="'+p.pid+'" data-name="'+p.name+'">终止</button>'+
+    '</div>';
+  });
+  $('procGrid').innerHTML=ghtml;
+
+  $('count').textContent=filtered.length+' / '+allProcs.length+' 个进程';
+}
+
+function fetchProcs(){
+  return fetch('/api/processes?sort='+currentSort+'&dir='+(currentDir?'asc':'desc')).then(function(r){return r.json()}).then(function(d){
+    allProcs=d.processes;
+    render();
+  }).catch(function(){});
+}
+
+function setSort(key){
+  if(currentSort===key){currentDir=!currentDir;}else{currentSort=key;currentDir=true;}
+  document.querySelectorAll('.sort-card').forEach(function(c){c.classList.remove('active')});
+  document.querySelector('.sort-card[data-sort="'+key+'"]').classList.add('active');
+  document.querySelectorAll('.proc-table th').forEach(function(t){t.classList.remove('sorted')});
+  var th=document.querySelector('.proc-table th[data-sort="'+key+'"]');
+  if(th)th.classList.add('sorted');
+  updateDirText();
+  fetchProcs();
+}
+
+document.querySelectorAll('.sort-card[data-sort]').forEach(function(card){
+  card.addEventListener('click',function(e){e.preventDefault();setSort(this.dataset.sort)});
+});
+
+$('dirBtn').addEventListener('click',function(e){
+  e.preventDefault();
+  currentDir=!currentDir;
+  updateDirText();
+  fetchProcs();
+});
+
+document.querySelectorAll('.proc-table th[data-sort]').forEach(function(th){
+  th.addEventListener('click',function(){setSort(this.dataset.sort)});
+});
+
+$('tbody').addEventListener('click',function(e){
+  if(!e.target.classList.contains('kill-btn'))return;
+  var pid=e.target.dataset.pid;
+  var name=e.target.dataset.name;
+  if(!confirm('确定终止进程 '+name+' (PID: '+pid+') ?'))return;
+  fetch('/api/processes/'+pid+'/kill',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+    toast(d.message,d.ok);
+    setTimeout(fetchProcs,500);
+  }).catch(function(){toast('请求失败',false)});
+});
+
+$('procGrid').addEventListener('click',function(e){
+  if(!e.target.classList.contains('kill-btn'))return;
+  var pid=e.target.dataset.pid;
+  var name=e.target.dataset.name;
+  if(!confirm('确定终止进程 '+name+' (PID: '+pid+') ?'))return;
+  fetch('/api/processes/'+pid+'/kill',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+    toast(d.message,d.ok);
+    setTimeout(fetchProcs,500);
+  }).catch(function(){toast('请求失败',false)});
+});
+
+$('search').addEventListener('input',render);
+
+$('sortToggle').addEventListener('click',function(e){
+  e.preventDefault();
+  var grid=$('sortGrid');
+  var isHidden=grid.classList.contains('hidden');
+  grid.classList.toggle('hidden');
+  this.classList.toggle('active');
+  $('sortArrow').textContent=isHidden?'▲':'▼';
+});
+
+updateDirText();
+fetchProcs();
+setInterval(fetchProcs,2000);
+</script>
+</body>
+</html>

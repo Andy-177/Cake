@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>性能监视器 - Cake</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding:24px 32px}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.topbar h1{font-size:16px;font-weight:500;letter-spacing:2px;color:#222}
+.back{font-size:12px;color:#999;text-decoration:none;letter-spacing:1px}
+.back:hover{color:#222}
+
+.monitor-layout{display:flex;gap:12px}
+.monitor-list{display:flex;flex-direction:column;gap:8px;width:300px;flex-shrink:0}
+.monitor-right{flex:1}
+.monitor-card{padding:14px 16px;cursor:pointer;position:relative;transition:filter .2s;overflow:hidden}
+.monitor-card:hover{filter:brightness(.97)}
+.monitor-card .label{font-size:10px;color:#666;letter-spacing:1.5px;margin-bottom:8px;font-weight:500}
+.monitor-card .value{font-size:22px;font-weight:600;color:#111}
+.monitor-card .unit{font-size:11px;color:#999;font-weight:400}
+.monitor-card .sub{font-size:10px;color:#999;margin-top:6px}
+.bar-track{margin-top:8px;height:2px;background:rgba(0,0,0,.06);border-radius:2px;overflow:hidden}
+.bar{height:100%;border-radius:2px;transition:width .3s ease}
+.mc-blue{background:#dbeafe}.mc-blue .bar{background:#3b82f6}
+.mc-yellow{background:#fef3c7}.mc-yellow .bar{background:#f59e0b}
+.mc-green{background:#dcfce7}.mc-green .bar{background:#22c55e}
+.mc-purple{background:#f3e8ff}.mc-purple .bar{background:#a855f7}
+.chart-section{background:#fff;border:1px solid #e5e5e5;padding:20px;width:100%;display:none}
+.chart-section.open{display:block}
+.chart-section .label{font-size:11px;color:#aaa;letter-spacing:1.5px;margin-bottom:12px;font-weight:500}
+.chart-section canvas{width:100%!important;height:410px!important}
+
+@media(max-width:900px){
+  .monitor-layout{flex-direction:column}
+  .monitor-list{width:100%}
+  body{padding:16px}
+  .chart-section canvas{height:80px!important}
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>性能监视器</h1>
+  <a class="back" href="/">← 返回面板</a>
+</div>
+
+<div class="monitor-layout">
+  <div class="monitor-list">
+    <div class="monitor-card mc-blue" data-chart="cpu">
+      <div class="label">处理器</div>
+      <div class="value"><span id="cpu-val">-</span><span class="unit">%</span></div>
+      <div class="bar-track"><div class="bar" id="cpu-bar" style="width:0"></div></div>
+      <div class="sub" id="cpu-sub"></div>
+    </div>
+    <div class="monitor-card mc-yellow" data-chart="mem">
+      <div class="label">内存</div>
+      <div class="value"><span id="mem-val">-</span><span class="unit">%</span></div>
+      <div class="bar-track"><div class="bar" id="mem-bar" style="width:0"></div></div>
+      <div class="sub" id="mem-sub"></div>
+    </div>
+    <div class="monitor-card mc-green" data-chart="disk">
+      <div class="label">磁盘</div>
+      <div class="value"><span id="disk-val">-</span><span class="unit">%</span></div>
+      <div class="bar-track"><div class="bar" id="disk-bar" style="width:0"></div></div>
+      <div class="sub" id="disk-sub"></div>
+    </div>
+    <div class="monitor-card mc-purple" data-chart="net">
+      <div class="label">网络</div>
+      <div class="value"><span id="net-val">-</span><span class="unit"> MB</span></div>
+      <div class="bar-track"><div class="bar" id="net-bar" style="width:0"></div></div>
+      <div class="sub" id="net-sub"></div>
+    </div>
+  </div>
+  <div class="monitor-right">
+    <div class="chart-section" id="sec-cpu"><div class="label">处理器使用率</div><canvas id="chart-cpu"></canvas></div>
+    <div class="chart-section" id="sec-mem"><div class="label">内存使用率</div><canvas id="chart-mem"></canvas></div>
+    <div class="chart-section" id="sec-disk"><div class="label">磁盘使用率</div><canvas id="chart-disk"></canvas></div>
+    <div class="chart-section" id="sec-net"><div class="label">网络流量</div><canvas id="chart-net"></canvas></div>
+  </div>
+</div>
+
+<script>
+var MAX=120;
+var hist={cpu:[],mem:[],disk:[],net:[]};
+var labels=[];
+var charts={};
+var openChart=null;
+
+function $(s){return document.getElementById(s)}
+
+var params=new URLSearchParams(window.location.search);
+var initTab=params.get('tab')||'cpu';
+
+var chartConfigs={
+  cpu:{color:'#3b82f6',yMax:100,yUnit:'%'},
+  mem:{color:'#f59e0b',yMax:100,yUnit:'%'},
+  disk:{color:'#22c55e',yMax:100,yUnit:'%'},
+  net:{color:'#a855f7',yMax:null,yUnit:' MB'}
+};
+
+Object.keys(chartConfigs).forEach(function(key){
+  var c=chartConfigs[key];
+  charts[key]=new Chart($('chart-'+key).getContext('2d'),{
+    type:'line',
+    data:{labels:[],datasets:[{data:[],borderColor:c.color,backgroundColor:c.color+'20',fill:true,tension:0,pointRadius:0,borderWidth:2}]},
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:0},
+      plugins:{legend:{display:false}},
+      scales:{x:{display:false},y:{min:0,max:c.yMax,ticks:{callback:function(v){return v+c.yUnit},font:{size:11},color:'#aaa'},grid:{color:'#f0f0f0'}}}
+    }
+  });
+});
+
+document.querySelectorAll('.monitor-card[data-chart]').forEach(function(card){
+  card.addEventListener('click',function(){
+    var key=this.dataset.chart;
+    var sec=$('sec-'+key);
+    if(openChart===key){
+      sec.classList.remove('open');
+      openChart=null;
+      return;
+    }
+    if(openChart)$('sec-'+openChart).classList.remove('open');
+    openChart=key;
+    sec.classList.add('open');
+  });
+});
+
+if(initTab){
+  var sec=$('sec-'+initTab);
+  if(sec){sec.classList.add('open');openChart=initTab;}
+}
+
+function tick(){
+  return fetch('/api/info').then(function(r){return r.json()}).then(function(d){
+    var now=new Date().toLocaleTimeString('zh-CN',{hour12:false});
+    labels.push(now);if(labels.length>MAX)labels.shift();
+    hist.cpu.push(d.cpu.percent);if(hist.cpu.length>MAX)hist.cpu.shift();
+    hist.mem.push(d.mem.percent);if(hist.mem.length>MAX)hist.mem.shift();
+    hist.disk.push(d.disk.percent);if(hist.disk.length>MAX)hist.disk.shift();
+    hist.net.push(d.net.sent);if(hist.net.length>MAX)hist.net.shift();
+
+    Object.keys(charts).forEach(function(k){
+      charts[k].data.labels=labels;
+      charts[k].data.datasets[0].data=hist[k];
+      charts[k].update('none');
+    });
+
+    $('cpu-val').textContent=d.cpu.percent;
+    $('cpu-bar').style.width=d.cpu.percent+'%';
+    $('cpu-sub').textContent=d.cpu.cores+' 物理核心 / '+d.cpu.threads+' 线程 · '+d.cpu.freq+' MHz';
+
+    $('mem-val').textContent=d.mem.percent;
+    $('mem-bar').style.width=d.mem.percent+'%';
+    $('mem-sub').textContent=d.mem.used+' / '+d.mem.total+' GB';
+
+    $('disk-val').textContent=d.disk.percent;
+    $('disk-bar').style.width=d.disk.percent+'%';
+    $('disk-sub').textContent=d.disk.used+' / '+d.disk.total+' GB';
+
+    $('net-val').textContent=d.net.sent;
+    $('net-bar').style.width=Math.min(d.net.sent/1024*100,100)+'%';
+    $('net-sub').innerHTML='上传 '+d.net.sent+' MB &nbsp; 下载 '+d.net.recv+' MB';
+  }).catch(function(){});
+}
+tick().then(function loop(){return tick().then(loop)}).catch(function(){setTimeout(loop,1)});
+</script>
+</body>
+</html>

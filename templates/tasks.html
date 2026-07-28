@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务计划 - Cake</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding:24px 32px}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar h1{font-size:16px;font-weight:500;letter-spacing:2px;color:#222}
+.back{font-size:12px;color:#999;text-decoration:none;letter-spacing:1px}
+.back:hover{color:#222}
+.create-btn{padding:8px 20px;background:#222;color:#fff;font-size:12px;font-family:inherit;border:none;cursor:pointer;letter-spacing:1px;transition:opacity .2s}
+.create-btn:hover{opacity:.8}
+
+.task-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:12px}
+@media(max-width:500px){.task-grid{grid-template-columns:1fr}}
+.task-card{background:#fff;border:1px solid #e5e5e5;padding:16px;transition:filter .2s;position:relative}
+.task-card:hover{border-color:#ccc}
+.task-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+.task-name{font-size:14px;font-weight:600;color:#111;word-break:break-all}
+.task-badge{font-size:9px;padding:2px 8px;border-radius:2px;letter-spacing:.5px;white-space:nowrap}
+.badge-once{background:#f3e8ff;color:#7c3aed}
+.badge-yearly{background:#dbeafe;color:#1d4ed8}
+.badge-weekly{background:#dcfce7;color:#15803d}
+.badge-daily{background:#fef3c7;color:#b45309}
+.badge-countdown{background:#fce7f3;color:#be185d}
+.task-command{margin-bottom:10px}
+.task-command code{display:block;font-size:11px;color:#666;background:#fafafa;padding:6px 8px;border:1px solid #eee;word-break:break-all;font-family:'Noto Sans SC',sans-serif}
+.task-info{font-size:11px;color:#999;line-height:1.8}
+.task-info span{color:#333;font-weight:500}
+.task-actions{display:flex;gap:8px;margin-top:10px}
+.task-actions button{padding:4px 12px;font-size:10px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;cursor:pointer;letter-spacing:.5px;transition:all .2s}
+.task-actions button:hover{filter:brightness(.9)}
+.task-actions .toggle-btn.on{background:#dcfce7;border-color:#22c55e;color:#15803d}
+.task-actions .toggle-btn.off{background:#fee2e2;border-color:#ef4444;color:#dc2626}
+.task-actions .del-btn:hover{background:#fee2e2;color:#ef4444;border-color:#ef4444}
+.task-actions .edit-btn:hover{background:#dbeafe;color:#1d4ed8;border-color:#1d4ed8}
+.countdown-progress{margin-top:8px;height:3px;background:#eee;border-radius:2px;overflow:hidden}
+.countdown-progress .bar{height:100%;background:#06b6d4;border-radius:2px;transition:width 1s linear}
+.empty-state{padding:60px 20px;text-align:center;color:#999;font-size:13px;letter-spacing:.5px}
+
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:100;display:none;align-items:center;justify-content:center}
+.overlay.show{display:flex}
+.modal{background:#fff;width:480px;max-width:90vw;max-height:90vh;overflow-y:auto;padding:24px}
+.modal h2{font-size:14px;font-weight:600;color:#111;margin-bottom:16px;letter-spacing:1px}
+.modal label{display:block;font-size:11px;color:#666;margin-bottom:4px;margin-top:12px;letter-spacing:.5px;font-weight:500}
+.modal label:first-child{margin-top:0}
+.modal input,.modal select,.modal textarea{width:100%;padding:8px 12px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;outline:none;transition:border-color .2s}
+.modal input:focus,.modal select:focus,.modal textarea:focus{border-color:#999}
+.modal textarea{resize:vertical;min-height:60px}
+.modal .row{display:flex;gap:8px}
+.modal .row>*{flex:1}
+.modal .actions{display:flex;gap:8px;margin-top:20px;justify-content:flex-end}
+.modal .actions button{padding:8px 20px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;cursor:pointer;letter-spacing:1px;transition:all .2s}
+.modal .actions .btn-cancel{background:#fff}
+.modal .actions .btn-submit{background:#222;color:#fff;border-color:#222}
+.modal .actions .btn-submit:hover{opacity:.8}
+.modal .actions .btn-cancel:hover{background:#f5f5f5}
+.modal .type-hint{font-size:10px;color:#999;margin-top:4px}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-left">
+    <h1>任务计划</h1>
+  </div>
+  <div style="display:flex;gap:12px;align-items:center">
+    <button class="create-btn" id="createBtn">+ 新建任务</button>
+    <a class="back" href="/">← 返回面板</a>
+  </div>
+</div>
+
+<div class="task-grid" id="taskGrid"></div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h2 id="modalTitle">新建任务</h2>
+    <label>任务名称</label>
+    <input id="f-name" placeholder="例如: 备份数据库">
+    <label>执行命令</label>
+    <textarea id="f-command" placeholder="python -c &quot;print('hello')&quot;"></textarea>
+    <label>执行模式</label>
+    <select id="f-type">
+      <option value="once">指定日期运行（一次）</option>
+      <option value="yearly">每年（月/日/时/分/秒）</option>
+      <option value="weekly">每周（周X/时/分/秒）</option>
+      <option value="daily">每天（时/分/秒）</option>
+      <option value="countdown">倒计时循环（秒）</option>
+    </select>
+    <div id="onceFields">
+      <label>日期</label>
+      <div class="row">
+        <input id="f-year" type="number" placeholder="年" min="2020" max="2099">
+        <input id="f-month" type="number" placeholder="月" min="1" max="12">
+        <input id="f-day" type="number" placeholder="日" min="1" max="31">
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer">
+        <input id="f-auto-delete" type="checkbox" style="width:auto">
+        <span>执行后自动删除</span>
+      </label>
+    </div>
+    <div id="yearlyFields" style="display:none">
+      <label>每年</label>
+      <div class="row">
+        <input id="f-y-month" type="number" placeholder="月" min="1" max="12">
+        <input id="f-y-day" type="number" placeholder="日" min="1" max="31">
+      </div>
+    </div>
+    <div id="weeklyFields" style="display:none">
+      <label>每周</label>
+      <select id="f-weekday">
+        <option value="0">周一</option>
+        <option value="1">周二</option>
+        <option value="2">周三</option>
+        <option value="3">周四</option>
+        <option value="4">周五</option>
+        <option value="5">周六</option>
+      </select>
+    </div>
+    <div id="dailyFields" style="display:none"></div>
+    <div id="timeFields">
+      <label>时间</label>
+      <div class="row">
+        <input id="f-hour" type="number" placeholder="时" min="0" max="23">
+        <input id="f-minute" type="number" placeholder="分" min="0" max="59">
+        <input id="f-second" type="number" placeholder="秒" min="0" max="59">
+      </div>
+    </div>
+    <div id="countdownFields" style="display:none">
+      <label>循环周期</label>
+      <div class="row">
+        <input id="f-c-hour" type="number" placeholder="时" min="0" max="99" value="0">
+        <input id="f-c-minute" type="number" placeholder="分" min="0" max="59" value="0">
+        <input id="f-c-second" type="number" placeholder="秒" min="0" max="59" value="60">
+      </div>
+      <div class="type-hint">倒计时结束后重新开始，循环执行</div>
+    </div>
+    <div class="actions">
+      <button class="btn-cancel" id="modalCancel">取消</button>
+      <button class="btn-submit" id="modalSubmit">创建</button>
+    </div>
+  </div>
+</div>
+
+<script>function $(s){return document.getElementById(s)}
+
+var editingId=null;
+
+function loadTasks(){
+  return fetch('/api/tasks').then(function(r){return r.json()}).then(function(d){return d.tasks;});
+}
+
+function humanTime(iso){
+  if(!iso)return'-';
+  var d=new Date(iso);
+  var pad=function(n){return('0'+n).slice(-2);};
+  return d.getFullYear()+'/'+pad(d.getMonth()+1)+'/'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+}
+
+function typeLabel(t){
+  var map={once:'单次',yearly:'每年',weekly:'每周',daily:'每天',countdown:'倒计时'};
+  return map[t]||t;
+}
+
+function badgeClass(t){
+  return 'badge-'+t;
+}
+
+function scheduleText(task){
+  var t=task.type;
+  if(t==='once')return task.year+'/'+task.month+'/'+task.day+' '+pad0(task.hour)+':'+pad0(task.minute)+':'+pad0(task.second);
+  if(t==='yearly')return '每年 '+task.month+'/'+task.day+' '+pad0(task.hour)+':'+pad0(task.minute)+':'+pad0(task.second);
+  if(t==='weekly'){var w=['一','二','三','四','五','六'];return '每周'+w[task.weekday]+' '+pad0(task.hour)+':'+pad0(task.minute)+':'+pad0(task.second);}
+  if(t==='daily')return '每天 '+pad0(task.hour)+':'+pad0(task.minute)+':'+pad0(task.second);
+  if(t==='countdown'){var h=Math.floor(task.countdown_seconds/3600),m=Math.floor((task.countdown_seconds%3600)/60),s=task.countdown_seconds%60;return '每 '+h+'时 '+m+'分 '+s+'秒 循环';}
+  return'';
+}
+
+function autoDelText(task){
+  if(task.type==='once'&&task.auto_delete)return '（自动删除）';
+  return '';
+}
+
+function pad0(n){return('0'+n).slice(-2);}
+
+function render(){
+  loadTasks().then(function(tasks){
+    var g=$('taskGrid');
+    if(!tasks||!tasks.length){g.innerHTML='<div class="empty-state">暂无任务计划，点击上方 "新建任务" 创建</div>';return;}
+    var html='';
+    tasks.forEach(function(t){
+      var nextStr=t.next_run_iso?humanTime(t.next_run_iso):'等待执行';
+      var lastStr=t.last_run_iso?humanTime(t.last_run_iso):'从未执行';
+      var toggleClass=t.enabled?'off':'on';
+      var toggleText=t.enabled?'禁用':'启用';
+      var running=t.enabled?'':'style="opacity:.45"';
+      html+='<div class="task-card" data-id="'+t.id+'" '+running+'>'+
+        '<div class="task-header">'+
+          '<div class="task-name">'+escHtml(t.name||'未命名')+'</div>'+
+          '<div class="task-badge '+badgeClass(t.type)+'">'+typeLabel(t.type)+'</div>'+
+        '</div>'+
+        '<div class="task-command"><code>'+escHtml(t.command)+'</code></div>'+
+        '<div class="task-info">'+
+          '时间: <span>'+scheduleText(t)+' '+autoDelText(t)+'</span><br>'+
+          '下次执行: <span id="nr-'+t.id+'">'+nextStr+'</span><br>'+
+          '上次执行: <span>'+lastStr+'</span>'+
+        '</div>'+
+        (t.type==='countdown'&&t.next_run_iso?'<div class="countdown-progress" id="cp-'+t.id+'"><div class="bar" id="cb-'+t.id+'" style="width:0"></div></div>':'')+
+        '<div class="task-actions">'+
+          '<button class="toggle-btn '+toggleClass+'" data-id="'+t.id+'">'+toggleText+'</button>'+
+          '<button class="edit-btn" data-id="'+t.id+'">编辑</button>'+
+          '<button class="del-btn" data-id="'+t.id+'">删除</button>'+
+        '</div>'+
+      '</div>';
+    });
+    g.innerHTML=html;
+  });
+}
+
+function escHtml(s){
+  if(!s)return'';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+$('createBtn').addEventListener('click',function(){
+  editingId=null;
+  $('modalTitle').textContent='新建任务';
+  $('modalSubmit').textContent='创建';
+  $('f-name').value='';
+  $('f-command').value='';
+  $('f-type').value='once';
+  $('f-year').value=2026;
+  $('f-month').value=8;
+  $('f-day').value=1;
+  $('f-hour').value=0;
+  $('f-minute').value=0;
+  $('f-second').value=0;
+  $('f-y-month').value=1;
+  $('f-y-day').value=1;
+  $('f-weekday').value=0;
+  $('f-c-hour').value=0;
+  $('f-c-minute').value=0;
+  $('f-c-second').value=60;
+  $('f-auto-delete').checked=false;
+  showFields('once');
+  $('overlay').classList.add('show');
+});
+
+function setFormData(t){
+  editingId=t.id;
+  $('modalTitle').textContent='编辑任务';
+  $('modalSubmit').textContent='保存';
+  $('f-name').value=t.name||'';
+  $('f-command').value=t.command||'';
+  $('f-type').value=t.type;
+  $('f-year').value=t.year||2026;
+  $('f-month').value=t.month||1;
+  $('f-day').value=t.day||1;
+  $('f-hour').value=t.hour||0;
+  $('f-minute').value=t.minute||0;
+  $('f-second').value=t.second||0;
+  $('f-y-month').value=t.month||1;
+  $('f-y-day').value=t.day||1;
+  $('f-weekday').value=t.weekday||0;
+  var secs=t.countdown_seconds||60;
+  $('f-c-hour').value=Math.floor(secs/3600);
+  $('f-c-minute').value=Math.floor((secs%3600)/60);
+  $('f-c-second').value=secs%60;
+  $('f-auto-delete').checked=t.auto_delete?true:false;
+  showFields(t.type);
+  $('overlay').classList.add('show');
+}
+
+function showFields(type){
+  $('onceFields').style.display=type==='once'?'':'none';
+  $('yearlyFields').style.display=type==='yearly'?'':'none';
+  $('weeklyFields').style.display=type==='weekly'?'':'none';
+  $('dailyFields').style.display='none';
+  $('timeFields').style.display=type==='countdown'?'none':'';
+  $('countdownFields').style.display=type==='countdown'?'':'none';
+}
+
+$('f-type').addEventListener('change',function(){showFields(this.value);});
+
+$('modalCancel').addEventListener('click',function(){$('overlay').classList.remove('show');});
+$('overlay').addEventListener('click',function(e){if(e.target===this)this.classList.remove('show');});
+
+$('modalSubmit').addEventListener('click',function(){
+  var type=$('f-type').value;
+  var body={
+    name:$('f-name').value.trim(),
+    command:$('f-command').value.trim(),
+    type:type,
+    hour:parseInt($('f-hour').value)||0,
+    minute:parseInt($('f-minute').value)||0,
+    second:parseInt($('f-second').value)||0,
+  };
+  if(type==='once'){
+    body.year=parseInt($('f-year').value)||2026;
+    body.month=parseInt($('f-month').value)||1;
+    body.day=parseInt($('f-day').value)||1;
+    body.auto_delete=$('f-auto-delete').checked;
+  }
+  if(type==='yearly'){
+    body.month=parseInt($('f-y-month').value)||1;
+    body.day=parseInt($('f-y-day').value)||1;
+  }
+  if(type==='weekly'){
+    body.weekday=parseInt($('f-weekday').value)||0;
+  }
+  if(type==='countdown'){
+    body.countdown_seconds=(parseInt($('f-c-hour').value)||0)*3600+(parseInt($('f-c-minute').value)||0)*60+(parseInt($('f-c-second').value)||0);
+    if(body.countdown_seconds<1)body.countdown_seconds=60;
+  }
+  if(!body.name){alert('请输入任务名称');return;}
+  if(!body.command){alert('请输入执行命令');return;}
+
+  var url=editingId?'/api/tasks/'+editingId+'/update':'/api/tasks';
+  var method=editingId?'PUT':'POST';
+  fetch(url,{method:method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){
+      $('overlay').classList.remove('show');
+      render();
+    }
+  });
+});
+
+$('taskGrid').addEventListener('click',function(e){
+  var id=e.target.dataset.id;
+  if(e.target.classList.contains('toggle-btn')){
+    fetch('/api/tasks/'+id+'/toggle',{method:'POST'}).then(function(r){return r.json()}).then(function(){render();});
+  }
+  if(e.target.classList.contains('del-btn')){
+    if(!confirm('确定删除此任务？'))return;
+    fetch('/api/tasks/'+id+'/delete',{method:'POST'}).then(function(r){return r.json()}).then(function(){render();});
+  }
+  if(e.target.classList.contains('edit-btn')){
+    loadTasks().then(function(tasks){
+      for(var i=0;i<tasks.length;i++){
+        if(tasks[i].id===id){setFormData(tasks[i]);break;}
+      }
+    });
+  }
+});
+
+function updateCountdowns(tasks){
+  tasks.forEach(function(t){
+    if(t.type!=='countdown'||!t.next_run_iso||!t.enabled)return;
+    var now=Date.now();
+    var next=new Date(t.next_run_iso).getTime();
+    var remaining=Math.max(0,next-now);
+    var total=t.countdown_seconds*1000;
+    var pct=total>0?((total-remaining)/total*100):0;
+    var cb=$('cb-'+t.id);
+    if(cb)cb.style.width=Math.min(pct,100)+'%';
+    var nr=$('nr-'+t.id);
+    if(nr){
+      var secs=Math.ceil(remaining/1000);
+      if(secs>0){
+        var ch=Math.floor(secs/3600),cm=Math.floor((secs%3600)/60),cs=secs%60;
+        nr.textContent='倒计时 '+ch+'时 '+cm+'分 '+cs+'秒';
+      }else{
+        nr.textContent='执行中...';
+      }
+    }
+  });
+}
+
+function loop(){
+  loadTasks().then(function(tasks){
+    updateCountdowns(tasks);
+    setTimeout(loop,1000);
+  });
+}
+
+render();
+loop();
+</script>
+</body>
+</html>

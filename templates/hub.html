@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cake 面板</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding:32px 40px}
+
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.card{padding:22px 20px;cursor:pointer;transition:filter .2s;position:relative;text-decoration:none;color:inherit;display:block}
+.card:hover{filter:brightness(.95)}
+.sys-card{background:#7dd3fc;cursor:default;padding:22px 20px;grid-column:1/-1;display:flex;justify-content:space-between;align-items:center}
+.sys-card .label{font-size:13px;color:#0c4a6e;letter-spacing:1.5px;font-weight:400;margin-bottom:8px}
+.sys-card .sys-right{text-align:right;color:#0369a1}
+.card .label{font-size:11px;color:#666;letter-spacing:1.5px;margin-bottom:16px;font-weight:500}
+.card .value{font-size:28px;font-weight:600;color:#111}
+.card .unit{font-size:12px;color:#999;font-weight:400}
+.bar-track{margin-top:14px;height:3px;background:rgba(0,0,0,.06);border-radius:2px;overflow:hidden}
+.bar{height:100%;border-radius:2px;transition:width .5s ease}
+.c1{background:#dbeafe}.c1 .bar{background:#3b82f6}
+.c2{background:#fef3c7}.c2 .bar{background:#f59e0b}
+.c3{background:#dcfce7}.c3 .bar{background:#22c55e}
+.c4{background:#f3e8ff}.c4 .bar{background:#a855f7}
+.c5{background:#fee2e2}.c5 .bar{background:#ef4444}
+.c6{background:#cffafe}.c6 .bar{background:#06b6d4}
+.c7{background:#e0e7ff}.c7 .bar{background:#6366f1}
+.c8{background:#fce7f3}.c8 .bar{background:#ec4899}
+.c9{background:#ffedd5}.c9 .bar{background:#f97316}
+.c10{background:#e0f2fe}.c10 .bar{background:#0284c7}
+.sub{font-size:11px;color:#999;margin-top:12px}
+
+@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:500px){body{padding:20px}.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="sys-card">
+    <div>
+      <div class="label">系统</div>
+      <div class="value" style="color:#0c4a6e;font-size:28px" id="sys-os"></div>
+      <div class="sub" style="color:#0369a1" id="sys-arch"></div>
+    </div>
+    <div class="sys-right" style="text-align:right">
+      <div class="label">运行时间</div>
+      <div class="value" style="color:#0c4a6e;font-size:28px" id="sys-uptime"></div>
+      <div class="sub" style="color:#0369a1">&nbsp;</div>
+    </div>
+  </div>
+  <a class="card c1" href="/monitor?tab=cpu">
+    <div class="label">处理器</div>
+    <div class="value"><span id="cpu-val">-</span><span class="unit">%</span></div>
+    <div class="bar-track"><div class="bar" id="cpu-bar" style="width:0"></div></div>
+    <div class="sub" id="cpu-sub"></div>
+  </a>
+  <a class="card c2" href="/monitor?tab=mem">
+    <div class="label">内存</div>
+    <div class="value"><span id="mem-val">-</span><span class="unit">%</span></div>
+    <div class="bar-track"><div class="bar" id="mem-bar" style="width:0"></div></div>
+    <div class="sub" id="mem-sub"></div>
+  </a>
+  <a class="card c3" href="/monitor?tab=disk">
+    <div class="label">磁盘</div>
+    <div class="value"><span id="disk-val">-</span><span class="unit">%</span></div>
+    <div class="bar-track"><div class="bar" id="disk-bar" style="width:0"></div></div>
+    <div class="sub" id="disk-sub"></div>
+  </a>
+  <a class="card c4" href="/monitor?tab=net">
+    <div class="label">网络</div>
+    <div class="value"><span id="net-sent">-</span><span class="unit"> MB</span></div>
+    <div class="bar-track"><div class="bar" id="net-sent-bar" style="width:0"></div></div>
+    <div class="sub" id="net-sub"></div>
+  </a>
+  <a class="card c5" href="/processes">
+    <div class="label">进程数</div>
+    <div class="value"><span id="proc-val">-</span></div>
+    <div class="sub">运行中的进程</div>
+  </a>
+  <div class="card c6" style="cursor:default">
+    <div class="label">当前时间</div>
+    <div class="value" style="font-size:20px"><span id="time-val">-</span></div>
+    <div class="sub" id="date-val"></div>
+  </div>
+  <div style="display:flex;gap:12px;grid-column:span 1">
+    <a class="card c7" href="/monitor" style="flex:1">
+      <div class="label">性能监视器</div>
+      <div class="value" style="font-size:20px">→</div>
+      <div class="sub">查看全部实时图表</div>
+    </a>
+    <a class="card c8" href="/processes" style="flex:1">
+      <div class="label">进程管理器</div>
+      <div class="value" style="font-size:20px">→</div>
+      <div class="sub">管理运行中的进程</div>
+    </a>
+  </div>
+  <div style="display:flex;gap:12px;grid-column:span 1">
+    <a class="card c9" href="/vnc" style="flex:1">
+      <div class="label">远程连接</div>
+      <div class="value" style="font-size:20px">→</div>
+      <div class="sub">VNC 远程桌面连接</div>
+    </a>
+    <a class="card c10" href="/tasks" style="flex:1">
+      <div class="label">任务计划</div>
+      <div class="value" style="font-size:20px">
+        <span id="tasks-count">0</span><span class="unit"> 个待执行</span>
+      </div>
+      <div class="sub" id="tasks-next">暂无计划任务</div>
+    </a>
+  </div>
+</div>
+
+<script>
+function $(s){return document.getElementById(s)}
+function tick(){
+  return fetch('/api/info').then(function(r){return r.json()}).then(function(d){
+    var now=new Date().toLocaleTimeString('zh-CN',{hour12:false});
+
+    $('sys-os').textContent=d.system.os;
+    $('sys-arch').innerHTML=d.system.machine+'&nbsp;&nbsp;'+d.system.hostname+'@'+d.system.user;
+    $('sys-uptime').textContent=d.uptime;
+
+    $('proc-val').textContent=d.processes;
+
+    $('cpu-val').textContent=d.cpu.percent;
+    $('cpu-bar').style.width=d.cpu.percent+'%';
+    $('cpu-sub').textContent=d.cpu.cores+' 物理核心 / '+d.cpu.threads+' 线程 · '+d.cpu.freq+' MHz';
+
+    $('mem-val').textContent=d.mem.percent;
+    $('mem-bar').style.width=d.mem.percent+'%';
+    $('mem-sub').textContent=d.mem.used+' / '+d.mem.total+' GB';
+
+    $('disk-val').textContent=d.disk.percent;
+    $('disk-bar').style.width=d.disk.percent+'%';
+    $('disk-sub').textContent=d.disk.used+' / '+d.disk.total+' GB';
+
+    $('net-sent').textContent=d.net.sent;
+    $('net-sent-bar').style.width=Math.min(d.net.sent/1024*100,100)+'%';
+    $('net-sub').innerHTML='上传 '+d.net.sent+' MB &nbsp; 下载 '+d.net.recv+' MB';
+
+    $('time-val').textContent=now;
+    $('date-val').textContent=new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',weekday:'short'});
+  }).catch(function(){});
+  fetch('/api/tasks').then(function(r){return r.json()}).then(function(d){
+    var active=d.tasks.filter(function(t){return t.enabled;});
+    $('tasks-count').textContent=active.length;
+    var upcoming=active.filter(function(t){return t.next_run_iso;}).sort(function(a,b){return a.next_run_iso<b.next_run_iso?-1:1});
+    if(upcoming.length){
+      var dt=new Date(upcoming[0].next_run_iso);
+      $('tasks-next').textContent='最近: '+upcoming[0].name+' @ '+dt.toLocaleTimeString('zh-CN',{hour12:false});
+    }else{
+      $('tasks-next').textContent=active.length?'等待执行...':'暂无计划任务';
+    }
+  }).catch(function(){});
+}
+tick().then(function loop(){return tick().then(loop)}).catch(function(){setTimeout(loop,1)});
+</script>
+</body>
+</html>
