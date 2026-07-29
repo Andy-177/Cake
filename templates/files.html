@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>文件管理器 - Cake</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding:24px 32px}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar h1{font-size:16px;font-weight:500;letter-spacing:2px;color:#222}
+.back{font-size:12px;color:#999;text-decoration:none;letter-spacing:1px}
+.back:hover{color:#222}
+.hamburger{cursor:pointer;color:#666;padding:6px 14px;background:#fff;border:1px solid #e5e5e5;font-family:inherit;font-size:14px;transition:all .2s}
+.hamburger:hover{background:#fafafa;border-color:#ccc;color:#222}
+.upload-menu{position:absolute;top:100%;right:0;background:#fff;border:1px solid #e5e5e5;z-index:50;min-width:100px;display:none}
+.upload-opt{padding:8px 16px;font-size:12px;cursor:pointer;letter-spacing:.5px;transition:all .15s}
+.upload-opt:hover{background:#dbeafe;color:#1d4ed8}
+.tool-panel{display:flex;gap:8px;align-items:center;margin-bottom:12px;padding:8px 0;flex-wrap:wrap}
+.tool-panel button{padding:6px 14px;font-size:11px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;cursor:pointer;letter-spacing:.5px;transition:all .2s;white-space:nowrap}
+.tool-panel button:hover{background:#fafafa;border-color:#ccc}
+.drive-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:8px}
+.drive-card{padding:22px 20px;cursor:pointer;transition:filter .2s;text-decoration:none;color:inherit;display:block;border:none;background:#e0e7ff;text-align:left}
+.drive-card.danger{background:#fde8e8}
+.drive-card:hover{filter:brightness(.95)}
+.drive-card .label{font-size:11px;color:#666;letter-spacing:1.5px;margin-bottom:16px;font-weight:500}
+.drive-card .name{font-size:28px;font-weight:600;color:#111}
+.drive-card .info{font-size:12px;color:#999;margin-top:4px;font-weight:400}
+.bar-track{margin-top:14px;height:3px;background:rgba(0,0,0,.08);border-radius:2px;overflow:hidden}
+.bar{height:100%;border-radius:2px;transition:width .5s ease;background:#6366f1}
+.drive-card.danger .bar{background:#dc2626}
+.section-label{font-size:11px;color:#999;letter-spacing:1.5px;font-weight:500;margin-bottom:8px;text-transform:uppercase}
+.sidebar{position:fixed;top:0;left:-240px;width:220px;height:100%;background:#e8e8e8;border-right:1px solid #888;z-index:200;transition:left .25s;padding:20px 0;box-shadow:2px 0 12px rgba(0,0,0,.05)}
+.sidebar.open{left:0}
+.sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.15);z-index:199;display:none}
+.sidebar-overlay.show{display:block}
+.sidebar a{display:block;padding:10px 20px;font-size:13px;color:#444;text-decoration:none;letter-spacing:.5px;transition:all .15s}
+.sidebar a:hover{background:#f5f5f5;color:#111}
+.sidebar .logo{font-size:14px;font-weight:600;padding:10px 20px 20px;color:#111;letter-spacing:2px;border-bottom:1px solid #eee;margin-bottom:8px}
+.sidebar-logo{font-size:15px;font-weight:600;padding:20px 20px 16px;color:#111;letter-spacing:2px;border-bottom:1px solid #eee;margin-bottom:12px}
+.sidebar-title{font-size:10px;color:#999;letter-spacing:1px;padding:0 20px 8px;text-transform:uppercase}
+.sidebar .drive-item{display:block;padding:8px 20px;font-size:13px;color:#444;text-decoration:none;cursor:pointer;transition:all .15s}
+.sidebar .drive-item:hover{background:#dbeafe;color:#1d4ed8}
+.sidebar .tree-item{display:flex;align-items:center;padding:4px 12px 4px 8px;font-size:12px;color:#444;cursor:pointer;transition:all .1s;user-select:none}
+.sidebar .tree-item:hover{background:#dbeafe}
+.sidebar .tree-item.active{background:#dbeafe;color:#1d4ed8;font-weight:500}
+.sidebar .tree-toggle{width:16px;flex-shrink:0;font-size:8px;color:#999;text-align:center;cursor:pointer;transition:transform .15s;padding:2px 0}
+.sidebar .tree-toggle.open{transform:rotate(90deg)}
+.sidebar .tree-label{flex:1;padding:2px 4px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fav-star{width:16px;flex-shrink:0;text-align:center;font-size:11px;color:#f59e0b;cursor:pointer}
+.fav-remove{width:16px;flex-shrink:0;text-align:center;font-size:10px;color:#ccc;cursor:pointer;display:none;padding:2px 0}
+.sidebar .tree-item:hover .fav-remove{display:block}
+.fav-remove:hover{color:#ef4444}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+.toolbar button{padding:6px 14px;font-size:11px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;cursor:pointer;letter-spacing:.5px;transition:all .2s;white-space:nowrap}
+.toolbar button:hover{background:#fafafa;border-color:#ccc}
+.toolbar .action-btn{background:#222;color:#fff;border-color:#222}
+.toolbar .action-btn:hover{opacity:.8;background:#222}
+.search{padding:6px 12px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;outline:none;transition:border-color .2s;width:200px}
+.search:focus{border-color:#999}
+.path-input{flex:1;padding:6px 12px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;outline:none;transition:border-color .2s;min-width:0}
+.path-input:focus{border-color:#999}
+.path-bar{display:flex;align-items:center;gap:4px;margin-bottom:8px;font-size:12px;color:#666;flex-wrap:wrap}
+.path-bar .seg{cursor:pointer;padding:4px 8px;color:#666;transition:all .15s;border-radius:2px}
+.path-bar .seg:hover{background:#e5e5e5;color:#222}
+.path-bar .sep{color:#ccc}
+
+.proc-table{width:100%;background:#fff;border:1px solid #e5e5e5;border-collapse:collapse;font-size:12px}
+.proc-table th{padding:10px 14px;font-size:10px;color:#999;letter-spacing:1px;font-weight:500;text-align:left;border-bottom:1px solid #e5e5e5;cursor:pointer;user-select:none;white-space:nowrap}
+.proc-table th:hover{color:#222}
+.proc-table td{padding:8px 14px;color:#333;border-bottom:1px solid #f5f5f5;white-space:nowrap}
+.proc-table tr{cursor:pointer;transition:background .1s}
+.proc-table tr:hover td{background:#dbeafe}
+.proc-table .dir{font-weight:500;color:#111}
+.proc-table .dir-icon{color:#3b82f6;margin-right:6px}
+.proc-table .file-icon{color:#999;margin-right:6px}
+.proc-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.proc-table .actions{display:none;gap:4px}
+.proc-table tr:hover .actions{display:flex}
+.proc-table .actions button{padding:2px 8px;font-size:9px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;cursor:pointer;letter-spacing:.5px;transition:all .2s}
+.proc-table .actions button:hover{background:#f5f5f5;border-color:#ccc}
+.proc-table .actions .del-btn:hover{color:#ef4444;border-color:#ef4444;background:#fee2e2}
+.proc-table .actions .ren-btn:hover{color:#1d4ed8;border-color:#1d4ed8;background:#dbeafe}
+.permission{font-family:monospace;font-size:11px;color:#666}
+
+.empty{padding:40px;text-align:center;color:#999;font-size:13px}
+
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:100;display:none;align-items:center;justify-content:center}
+.overlay.show{display:flex}
+.modal{background:#fff;width:400px;max-width:90vw;padding:24px}
+.modal h2{font-size:14px;font-weight:600;color:#111;margin-bottom:16px;letter-spacing:1px}
+.modal label{display:block;font-size:11px;color:#666;margin-bottom:4px;margin-top:12px;letter-spacing:.5px}
+.modal input{width:100%;padding:8px 12px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;outline:none;transition:border-color .2s}
+.modal input:focus{border-color:#999}
+.modal .actions{display:flex;gap:8px;margin-top:20px;justify-content:flex-end}
+.modal .actions button{padding:8px 20px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;cursor:pointer;letter-spacing:1px;transition:all .2s}
+.modal .actions .btn-cancel{background:#fff}
+.modal .actions .btn-submit{background:#222;color:#fff;border-color:#222}
+.modal .actions .btn-submit:hover{opacity:.8}
+.modal .actions .btn-cancel:hover{background:#f5f5f5}
+
+.toast{position:fixed;top:20px;right:20px;padding:10px 20px;font-size:12px;color:#fff;border-radius:2px;z-index:200;transition:opacity .3s}
+.toast-ok{background:#22c55e}
+.toast-err{background:#ef4444}
+
+@media(max-width:900px){body{padding:16px}.proc-table{font-size:11px}.proc-table th,.proc-table td{padding:6px 8px}.col-perm{display:none}}
+@media(max-width:500px){.col-type{display:none}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-left">
+    <h1>文件管理器</h1>
+  </div>
+  <a class="back" href="/">← 返回面板</a>
+</div>
+
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-logo">文件管理器</div>
+  <div class="tree-item" data-favroot="true" style="padding-left:8px">
+    <span class="tree-toggle open">▶</span>
+    <span class="tree-label" style="font-weight:600">收藏夹</span>
+  </div>
+  <div id="favContainer"></div>
+  <div class="tree-item" data-root="true" style="padding-left:8px">
+    <span class="tree-toggle open">▶</span>
+    <span class="tree-label" style="font-weight:600">此电脑</span>
+  </div>
+  <div id="treeContainer"></div>
+</div>
+
+<div class="path-bar" id="pathBar"></div>
+
+<div class="toolbar">
+  <button class="hamburger" id="menuBtn">☰</button>
+  <button id="backBtn" disabled>←</button>
+  <button id="fwdBtn" disabled>→</button>
+  <button id="pathToggleBtn" title="展开/收起路径">📂</button>
+  <input class="path-input" id="pathInput" placeholder="输入路径后按 Enter...">
+  <button id="refreshBtn" title="刷新">↻</button>
+  <input class="search" id="search" placeholder="搜索...">
+  <div style="position:relative">
+    <button id="uploadBtn">上传</button>
+    <div class="upload-menu" id="uploadMenu">
+      <div class="upload-opt" data-type="file">上传文件</div>
+      <div class="upload-opt" data-type="folder">上传文件夹</div>
+    </div>
+    <input type="file" id="fileInput" multiple style="display:none">
+    <input type="file" id="folderInput" webkitdirectory style="display:none">
+  </div>
+  <button id="toolsToggleBtn">工具箱 ▾</button>
+</div>
+<div class="tool-panel" id="toolPanel" style="display:none">
+  <button id="mkdirBtn">新建文件夹</button>
+  <button id="mkfileBtn">新建文件</button>
+  <button id="computerBtn">此电脑</button>
+</div>
+
+<div id="computerView" style="display:none"></div>
+
+<table class="proc-table" id="fileTable">
+  <thead>
+    <tr>
+      <th data-sort="name" style="width:40%">名称</th>
+      <th data-sort="modified">修改日期</th>
+      <th data-sort="type" class="col-type">类型</th>
+      <th data-sort="size" class="num">大小</th>
+      <th data-sort="permission" class="col-perm" id="permHead" style="display:none">权限</th>
+      <th style="cursor:default;width:80px"></th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h2 id="modalTitle">新建文件夹</h2>
+    <label id="modalLabel">文件夹名称</label>
+    <input id="modalInput" placeholder="输入名称">
+    <div class="actions">
+      <button class="btn-cancel" id="modalCancel">取消</button>
+      <button class="btn-submit" id="modalSubmit">确定</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var currentPath='';
+var allEntries=[];
+var sortKey='name';
+var sortDir=1;
+var isWin=navigator.platform.indexOf('Win')!==-1;
+var navHistory=[];
+var histIdx=-1;
+var computerMode=false;
+var drivesCache=[];
+
+function pushHistory(path){
+  if(histIdx<navHistory.length-1)navHistory=navHistory.slice(0,histIdx+1);
+  navHistory.push(path);
+  histIdx=navHistory.length-1;
+  updateNavButtons();
+}
+function updateNavButtons(){
+  var b=$('backBtn');if(b)b.disabled=histIdx<=0;
+  var f=$('fwdBtn');if(f)f.disabled=histIdx>=navHistory.length-1;
+}
+
+function $(s){return document.getElementById(s)}
+
+function toast(msg,ok){
+  var t=document.createElement('div');
+  t.className='toast '+(ok?'toast-ok':'toast-err');
+  t.textContent=msg;
+  document.body.appendChild(t);
+  setTimeout(function(){t.style.opacity='0';setTimeout(function(){t.remove()},300)},1500);
+}
+
+function pad0(n){return('0'+n).slice(-2);}
+
+function fmtDate(iso){
+  if(!iso)return'-';
+  var d=new Date(iso);
+  return d.getFullYear()+'/'+pad0(d.getMonth()+1)+'/'+pad0(d.getDate())+' '+pad0(d.getHours())+':'+pad0(d.getMinutes());
+}
+
+function fmtSize(bytes){
+  if(bytes==null)return'-';
+  var units=['B','KB','MB','GB','TB'];
+  var i=0;
+  var val=bytes;
+  while(val>=1024&&i<units.length-1){val/=1024;i++;}
+  return (i===0?Math.round(val):val.toFixed(1))+' '+units[i];
+}
+
+function loadDir(path, push){
+  var url='/api/files?path='+encodeURIComponent(path||'/');
+  if(!path&&isWin)url='/api/files?path='+encodeURIComponent('C:\\');
+  return fetch(url).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast(d.error,false);return false;}
+    computerMode=false;
+    document.getElementById('fileTable').style.display='';
+    document.getElementById('computerView').style.display='none';
+    currentPath=d.path;
+    $('pathInput').value=d.path;
+    renderPathBar(d.path);
+    if(push!==false)pushHistory(d.path);
+    updateNavButtons();
+    allEntries=d.entries||[];
+    render();
+    return true;
+  }).catch(function(){toast('加载失败',false);return false;});
+}
+
+function render(){
+  var q=$('search').value.toLowerCase();
+  var filtered=allEntries.filter(function(e){return e.name.toLowerCase().indexOf(q)>=0;});
+  filtered.sort(function(a,b){
+    var va=a[sortKey],vb=b[sortKey];
+    if(sortKey==='name'){va=va.toLowerCase();vb=vb.toLowerCase();}
+    if(sortKey==='size'){
+      if(va==null)va=-1;
+      if(vb==null)vb=-1;
+    }
+    if(va<vb)return -1*sortDir;
+    if(va>vb)return 1*sortDir;
+    return 0;
+  });
+  var html='';
+  if(!filtered.length){html='<tr><td colspan="6" class="empty">无文件</td></tr>';}
+  filtered.forEach(function(e){
+    var fullPath=isWin?currentPath+'\\'+e.name:currentPath+'/'+e.name;
+    var isFav=getFavorites().indexOf(fullPath)>=0;
+    var icon=e.is_dir?'<span class="dir-icon">📁</span>':'<span class="file-icon">📄</span>';
+    var nameClass=e.is_dir?'dir':'';
+    html+='<tr data-name="'+escAttr(e.name)+'" data-dir="'+e.is_dir+'">'+
+      '<td class="'+nameClass+'">'+
+        '<span class="fav-star" data-path="'+escAttr(fullPath)+'">'+(isFav?'★':'☆')+'</span>'+
+        icon+escHtml(e.name)+'</td>'+
+      '<td>'+fmtDate(e.modified)+'</td>'+
+      '<td class="col-type">'+escHtml(e.type)+'</td>'+
+      '<td class="num">'+fmtSize(e.size)+'</td>'+
+      (e.permission!==undefined?'<td class="col-perm"><span class="permission">'+escHtml(e.permission)+'</span></td>':'')+
+      '<td><div class="actions">'+
+        '<button class="down-btn" data-file="'+escAttr(e.name)+'">下载</button>'+
+        '<button class="ren-btn" data-file="'+escAttr(e.name)+'">重命名</button>'+
+        '<button class="del-btn" data-file="'+escAttr(e.name)+'">删除</button>'+
+      '</div></td>'+
+    '</tr>';
+  });
+  $('tbody').innerHTML=html;
+  // Show permission column if any entry has it
+  var hasPerm=allEntries.some(function(e){return e.permission!==undefined;});
+  $('permHead').style.display=hasPerm?'':'none';
+}
+
+function escHtml(s){if(!s)return'';return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function escAttr(s){if(!s)return'';return s.replace(/"/g,'&quot;').replace(/&/g,'&amp;');}
+
+function renderPathBar(path){
+  var parts=path.split(isWin?'\\':'/');
+  var html='';
+  var acc=isWin?(parts[0]||''):'';
+  parts.forEach(function(p,i){
+    if(!p&&i===0&&!isWin)return;
+    if(!p&&acc)return;
+    if(i>0)html+='<span class="sep">/</span>';
+    if(isWin&&i===0){
+      acc=p;
+      html+='<span class="seg" data-path="'+escAttr(p+'\\')+'">'+escHtml(p)+'</span>';
+    }else{
+      acc=acc?(acc+'/'+p):p;
+      html+='<span class="seg" data-path="'+escAttr(acc)+'">'+escHtml(p)+'</span>';
+    }
+  });
+  $('pathBar').innerHTML=html;
+  $('pathBar').style.display=pathBarVisible?'block':'none';
+  $('pathToggleBtn').textContent=pathBarVisible?'📂':'📁';
+  updateTreeSelection(path);
+}
+var pathBarVisible=true;
+
+function renderSidebarTree(path){
+  var parts=path.split(isWin?'\\':'/');
+  var html='<div class="sidebar-title">当前路径</div>';
+  var acc='';
+  parts.forEach(function(p,i){
+    if(!p&&i===0)return;
+    if(!p)return;
+    if(isWin&&i===0){
+      acc=p+'\\';
+      html+='<div class="tree-item" data-path="'+escAttr(acc)+'">'+escHtml(p)+'</div>';
+    }else{
+      acc=acc?acc+'/'+p:p;
+      var level=Math.min(isWin?i-1:i,3);
+      html+='<div class="tree-item level-'+level+'" data-path="'+escAttr(acc)+'">'+escHtml(p)+'</div>';
+    }
+  });
+  var treeDiv=document.getElementById('sidebarTree');
+  if(treeDiv)treeDiv.innerHTML=html;
+}
+
+// Navigate
+$('pathToggleBtn').addEventListener('click',function(){
+  var bar=$('pathBar');
+  pathBarVisible=!pathBarVisible;
+  bar.style.display=pathBarVisible?'block':'none';
+  this.textContent=pathBarVisible?'📂':'📁';
+});
+$('refreshBtn').addEventListener('click',function(){loadDir(currentPath);});
+
+// Sidebar
+$('menuBtn').addEventListener('click',function(){
+  $('sidebar').classList.add('open');
+  $('sidebarOverlay').classList.add('show');
+});
+$('sidebarOverlay').addEventListener('click',function(){
+  $('sidebar').classList.remove('open');
+  this.classList.remove('show');
+});
+
+// Tree
+function getFavorites(){
+  try{return JSON.parse(localStorage.getItem('favs')||'[]');}catch(e){return[];}
+}
+function setFavorites(v){localStorage.setItem('favs',JSON.stringify(v));}
+function toggleFavorite(path){
+  var favs=getFavorites();
+  var idx=favs.indexOf(path);
+  if(idx>=0){favs.splice(idx,1);}else{favs.push(path);}
+  setFavorites(favs);
+  renderFavs();
+  // Update star icons
+  document.querySelectorAll('.fav-star').forEach(function(s){
+    var p=s.dataset.path;
+    if(p===path)s.textContent=favs.indexOf(p)>=0?'★':'☆';
+  });
+  return idx<0;
+}
+function renderFavs(){
+  var favs=getFavorites();
+  var html='';
+  favs.forEach(function(p){
+    var name=isWin?p.replace(/\\$/,''):p.replace(/\/$/,'');
+    name=name.split(isWin?'\\':'/').pop()||name;
+    html+='<div class="tree-item" data-fav="true" data-path="'+escAttr(p)+'" style="padding-left:28px">'+
+      '<span class="tree-label">★ '+escHtml(name)+'</span>'+
+      '<span class="fav-remove" data-path="'+escAttr(p)+'">✕</span></div>';
+  });
+  $('favContainer').innerHTML=html;
+  // Show container only if there are favorites and section is open
+  var toggle=$('sidebar').querySelector('[data-favroot] .tree-toggle');
+  $('favContainer').style.display=favs.length&&toggle&&toggle.classList.contains('open')?'block':'none';
+}
+
+function initTree(){
+  renderFavs();
+  fetch('/api/files/drives').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    var html='';
+    d.drives.forEach(function(dr){
+      if(dr.type==='physical')return;
+      html+='<div class="tree-item" data-path="'+escAttr(dr.path)+'" style="padding-left:28px"><span class="tree-label">'+escHtml(dr.name)+'</span></div>';
+    });
+    $('treeContainer').innerHTML=html;
+  });
+}
+function updateTreeSelection(path){
+  $('treeContainer').querySelectorAll('.tree-item.active').forEach(function(e){e.classList.remove('active');});
+  $('favContainer').querySelectorAll('.tree-item.active').forEach(function(e){e.classList.remove('active');});
+  var all=$('sidebar').querySelectorAll('.tree-item[data-path]'),best=null,bestLen=0;
+  all.forEach(function(item){
+    var p=item.dataset.path;
+    if(p&&path.indexOf(p)===0&&p.length>bestLen){best=item;bestLen=p.length;}
+  });
+  if(best)best.classList.add('active');
+}
+
+$('sidebar').addEventListener('click',function(e){
+  var removeBtn=e.target.closest('.fav-remove');
+  if(removeBtn){
+    var path=removeBtn.dataset.path;
+    var favs=getFavorites();
+    var idx=favs.indexOf(path);
+    if(idx>=0){favs.splice(idx,1);setFavorites(favs);renderFavs();render();}
+    return;
+  }
+  var root=e.target.closest('[data-root]');
+  var favroot=e.target.closest('[data-favroot]');
+  var item=e.target.closest('.tree-item');
+  if(!item)return;
+  if(favroot){
+    var toggle=item.querySelector('.tree-toggle');
+    if(toggle){
+      toggle.classList.toggle('open');
+      var container=$('favContainer');
+      if(getFavorites().length)container.style.display=toggle.classList.contains('open')?'block':'none';
+    }
+    return;
+  }
+  if(root){
+    var toggle=item.querySelector('.tree-toggle');
+    if(toggle){
+      toggle.classList.toggle('open');
+      $('treeContainer').style.display=toggle.classList.contains('open')?'block':'none';
+    }
+    return;
+  }
+  var path=item.dataset.path;
+  if(path){
+    loadDir(path);
+    $('sidebar').classList.remove('open');
+    $('sidebarOverlay').classList.remove('show');
+  }
+});
+
+// Init
+initTree();
+$('pathInput').addEventListener('keydown',function(e){
+  if(e.key==='Enter'){
+    var val=this.value.trim();
+    if(val)loadDir(val);
+  }
+});
+
+$('pathBar').addEventListener('click',function(e){
+  var p=e.target.dataset.path;
+  if(p)loadDir(p);
+});
+$('backBtn').addEventListener('click',function(){
+  if(histIdx>0){histIdx--;loadDir(navHistory[histIdx],false);}
+});
+$('fwdBtn').addEventListener('click',function(){
+  if(histIdx<navHistory.length-1){histIdx++;loadDir(navHistory[histIdx],false);}
+});
+
+$('tbody').addEventListener('dblclick',function(e){
+  var tr=e.target.closest('tr');
+  if(!tr)return;
+  if(tr.dataset.dir==='true'){
+    var name=tr.dataset.name;
+    loadDir(isWin?currentPath+'\\'+name:currentPath+'/'+name);
+  }
+});
+
+// Favorites
+$('tbody').addEventListener('click',function(e){
+  var star=e.target.closest('.fav-star');
+  if(star){
+    toggleFavorite(star.dataset.path);
+    star.textContent=getFavorites().indexOf(star.dataset.path)>=0?'★':'☆';
+    return;
+  }
+});
+// Search
+$('search').addEventListener('input',render);
+
+// Sort
+document.querySelectorAll('.proc-table th[data-sort]').forEach(function(th){
+  th.addEventListener('click',function(){
+    var key=this.dataset.sort;
+    if(key===sortKey)sortDir*=-1;else{sortKey=key;sortDir=1;}
+    document.querySelectorAll('.proc-table th[data-sort]').forEach(function(t){t.classList.remove('sorted');});
+    this.classList.add('sorted');
+    render();
+  });
+});
+
+// Actions
+$('tbody').addEventListener('click',function(e){
+  var btn=e.target;
+  if(!btn.classList.contains('del-btn')&&!btn.classList.contains('ren-btn')&&!btn.classList.contains('down-btn'))return;
+  var tr=btn.closest('tr');
+  if(!tr)return;
+  var name=tr.dataset.name;
+  var path=isWin?currentPath+'\\'+name:currentPath+'/'+name;
+  if(btn.classList.contains('del-btn')){
+    if(!confirm('确定删除 "'+name+'" ？'))return;
+    fetch('/api/files/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path})}).then(function(r){return r.json()}).then(function(d){
+      toast(d.ok?'已删除':d.error,d.ok);
+      if(d.ok)loadDir(currentPath);
+    });
+  }
+  if(btn.classList.contains('ren-btn')){
+    var newName=prompt('重命名为：',name);
+    if(!newName||newName===name)return;
+    fetch('/api/files/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,name:newName})}).then(function(r){return r.json()}).then(function(d){
+      toast(d.ok?'已重命名':d.error,d.ok);
+      if(d.ok)loadDir(currentPath);
+    });
+  }
+  if(btn.classList.contains('down-btn')){
+    window.location.href='/api/files/download?path='+encodeURIComponent(path);
+  }
+});
+
+// Mkdir modal
+var modalCallback=null;
+$('mkdirBtn').addEventListener('click',function(){
+  $('modalTitle').textContent='新建文件夹';
+  $('modalLabel').textContent='文件夹名称';
+  $('modalInput').value='';
+  $('overlay').classList.add('show');
+  modalCallback=function(name){
+    fetch('/api/files/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:currentPath,name:name})}).then(function(r){return r.json()}).then(function(d){
+      toast(d.ok?'已创建':d.error,d.ok);
+      if(d.ok)loadDir(currentPath);
+    });
+  };
+});
+$('mkfileBtn').addEventListener('click',function(){
+  $('modalTitle').textContent='新建文件';
+  $('modalLabel').textContent='文件名称';
+  $('modalInput').value='';
+  $('overlay').classList.add('show');
+  modalCallback=function(name){
+    fetch('/api/files/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:currentPath,name:name})}).then(function(r){return r.json()}).then(function(d){
+      toast(d.ok?'已创建':d.error,d.ok);
+      if(d.ok)loadDir(currentPath);
+    });
+  };
+});
+
+$('modalCancel').addEventListener('click',function(){$('overlay').classList.remove('show');});
+$('overlay').addEventListener('click',function(e){if(e.target===this)this.classList.remove('show');});
+$('modalSubmit').addEventListener('click',function(){
+  var name=$('modalInput').value.trim();
+  if(!name){alert('请输入名称');return;}
+  if(modalCallback)modalCallback(name);
+  $('overlay').classList.remove('show');
+});
+
+// Upload
+$('uploadBtn').addEventListener('click',function(e){
+  var menu=$('uploadMenu');
+  menu.style.display=menu.style.display==='block'?'none':'block';
+  e.stopPropagation();
+});
+document.addEventListener('click',function(){$('uploadMenu').style.display='none';});
+$('uploadMenu').addEventListener('click',function(e){
+  var opt=e.target.closest('.upload-opt');
+  if(!opt)return;
+  $('uploadMenu').style.display='none';
+  if(opt.dataset.type==='file')$('fileInput').click();
+  else $('folderInput').click();
+});
+function uploadFiles(input, isDir){
+  var files=input.files;
+  if(!files.length)return;
+  var form=new FormData();
+  form.append('path',currentPath);
+  form.append('isDir',isDir?'1':'0');
+  for(var i=0;i<files.length;i++){
+    var file=files[i];
+    if(isDir){
+      // webkitRelativePath gives the full relative path
+      form.append('files',file,file.webkitRelativePath||file.name);
+    }else{
+      form.append('files',file);
+    }
+  }
+  toast('上传中...',true);
+  fetch('/api/files/upload',{method:'POST',body:form}).then(function(r){return r.json()}).then(function(d){
+    toast(d.ok?'上传完成':d.error,d.ok);
+    if(d.ok)loadDir(currentPath);
+  }).catch(function(){toast('上传失败',false);});
+  input.value='';
+}
+$('fileInput').addEventListener('change',function(){uploadFiles(this,false);});
+$('folderInput').addEventListener('change',function(){uploadFiles(this,true);});
+
+// Computer mode
+function showComputer(){
+  computerMode=true;
+  $('pathInput').value='computer';
+  $('pathBar').innerHTML='';
+  document.getElementById('fileTable').style.display='none';
+  document.getElementById('computerView').style.display='';
+  if(!drivesCache.length){
+    fetch('/api/files/drives').then(function(r){return r.json()}).then(function(d){
+      if(!d.ok)return;
+      drivesCache=d.drives;
+      renderComputer();
+    });
+  }else{
+    renderComputer();
+  }
+}
+function renderComputer(){
+  function fmt(gb){return (gb/1073741824).toFixed(1);}
+  function cardHtml(dr){
+    function fmt(gb){return (gb/1073741824).toFixed(1);}
+    var hasTotal=dr.total!==undefined;
+    var hasPct=dr.percent!==undefined;
+    var danger=hasTotal&&dr.free!==undefined&&dr.free<dr.total*0.1;
+    var label=dr.type==='physical'?'物理磁盘':'本地磁盘';
+    var info='';
+    if(hasPct)info='共 '+fmt(dr.total)+' GB &nbsp; 已用 '+fmt(dr.used)+' GB &nbsp; 可用 '+fmt(dr.free)+' GB';
+    else if(hasTotal)info='共 '+fmt(dr.total)+' GB';
+    return '<div class="drive-card'+(danger?' danger':'')+'" data-path="'+escAttr(dr.path)+'" data-type="'+escAttr(dr.type||'logical')+'">'+
+      '<div class="label">'+label+'</div>'+
+      '<div class="name">'+escHtml(dr.name)+'</div>'+
+      (hasPct?'<div class="bar-track"><div class="bar" style="width:'+dr.percent+'%"></div></div>':'')+
+      (info?'<div class="info">'+info+'</div>':'')+
+    '</div>';
+  }
+  var logical=drivesCache.filter(function(d){return d.type!=='physical';});
+  var physical=drivesCache.filter(function(d){return d.type==='physical';}).sort(function(a,b){return (a.total||0)-(b.total||0);});
+  var html='';
+  if(logical.length)html+='<div class="section-label">逻辑磁盘</div><div class="drive-grid">'+logical.map(cardHtml).join('')+'</div>';
+  if(physical.length)html+='<div class="section-label" style="margin-top:16px">物理磁盘</div><div class="drive-grid">'+physical.map(cardHtml).join('')+'</div>';
+  $('computerView').innerHTML=html;
+}
+$('computerBtn').addEventListener('click',function(){showComputer();$('toolPanel').style.display='none';$('toolsToggleBtn').textContent='工具箱 ▸';});
+$('computerView').addEventListener('click',function(e){
+  var card=e.target.closest('.drive-card');
+  if(!card)return;
+  if(card.dataset.type==='physical'){toast('物理磁盘不支持浏览',false);return;}
+  computerMode=false;
+  document.getElementById('fileTable').style.display='';
+  document.getElementById('computerView').style.display='none';
+  loadDir(card.dataset.path);
+});
+
+// Tools toggle
+$('toolsToggleBtn').addEventListener('click',function(){
+  var panel=$('toolPanel');
+  var isOpen=panel.style.display!='none';
+  panel.style.display=isOpen?'none':'flex';
+  this.textContent='工具箱 '+(isOpen?'▸':'▾');
+});
+
+// Init
+showComputer();
+</script>
+</body>
+</html>

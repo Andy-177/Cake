@@ -1,6 +1,6 @@
 import atexit
 import json
-import os
+import io, os, zipfile, re
 import subprocess
 import sys
 import time
@@ -12,8 +12,11 @@ import threading
 import uuid
 import datetime
 import calendar
+import shutil
+import stat
+import mimetypes
 import psutil
-from flask import Flask, jsonify, render_template, request, redirect, send_from_directory, abort
+from flask import Flask, jsonify, render_template, request, redirect, send_from_directory, send_file, abort
 
 app = Flask(__name__)
 
@@ -547,6 +550,104 @@ def api_kill_process(pid):
         return jsonify({"ok": False, "message": str(e)}), 500
 
 
+@app.route("/api/files/drives")
+def api_file_drives():
+    drives = []
+    if platform.system() == "Windows":
+        import string
+        for letter in string.ascii_uppercase:
+            path = letter + ":\\"
+            if os.path.exists(path):
+                try:
+                    usage = psutil.disk_usage(path)
+                    drives.append({"name": letter + ":", "path": path, "total": usage.total, "used": usage.used, "free": usage.free, "percent": usage.percent, "type": "logical"})
+                except:
+                    drives.append({"name": letter + ":", "path": path, "type": "logical"})
+        # Physical disks via wmic
+        try:
+            import subprocess
+            result = subprocess.run(["wmic", "diskdrive", "get", "size,model,deviceid", "/format:csv"], capture_output=True, text=True, timeout=5)
+            lines = result.stdout.strip().split("\n")
+            if len(lines) > 1:
+                for line in lines[1:]:
+                    parts = line.strip().split(",")
+                    if len(parts) >= 4:
+                        deviceid = parts[1]
+                        model = parts[2]
+                        size_str = parts[3]
+                        try:
+                            total = int(size_str)
+                        except:
+                            total = 0
+                        m = re.search(r'PHYSICALDRIVE(\d+)', deviceid, re.IGNORECASE)
+                        name = "磁盘 " + m.group(1) if m else deviceid
+                        drives.append({"name": name, "path": deviceid, "total": total, "type": "physical"})
+        except:
+            pass
+    else:
+        seen = set()
+        for part in psutil.disk_partitions():
+            if part.device not in seen:
+                seen.add(part.device)
+                display = part.device.replace("/dev/", "")
+                try:
+                    usage = psutil.disk_usage(part.mountpoint)
+                    drives.append({"name": display, "path": part.mountpoint, "total": usage.total, "used": usage.used, "free": usage.free, "percent": usage.percent, "type": "logical"})
+                except:
+                    drives.append({"name": display, "path": part.mountpoint, "type": "logical"})
+        # Physical disks on Linux
+        try:
+            for entry in os.scandir("/sys/block"):
+                if entry.is_dir():
+                    dev = entry.name
+                    if dev.startswith("sd") or dev.startswith("nvme") or dev.startswith("vd"):
+                        try:
+                            size_path = os.path.join("/sys/block", dev, "size")
+                            if os.path.exists(size_path):
+                                with open(size_path) as f:
+                                    sectors = int(f.read().strip())
+                                total = sectors * 512
+                                drives.append({"name": "/dev/" + dev, "path": "/dev/" + dev, "total": total, "type": "physical"})
+                        except:
+                            pass
+        except:
+            pass
+    return jsonify({"ok": True, "drives": drives})
+
+
+@app.route("/api/files/download")
+def api_file_download():
+    path = request.args.get("path", "")
+    if not path or not os.path.exists(path):
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+    if os.path.isdir(path):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(path):
+                for fn in files:
+                    fpath = os.path.join(root, fn)
+                    arcname = os.path.relpath(fpath, os.path.dirname(path))
+                    try:
+                        zf.write(fpath, arcname)
+                    except PermissionError:
+                        continue
+                for dn in dirs:
+                    dpath = os.path.join(root, dn)
+                    arcname = os.path.relpath(dpath, os.path.dirname(path)) + '/'
+                    try:
+                        zf.write(dpath, arcname)
+                    except PermissionError:
+                        continue
+        data.seek(0)
+        return send_file(data, download_name=os.path.basename(path) + '.zip', as_attachment=True)
+    try:
+        dirname = os.path.dirname(path)
+        filename = os.path.basename(path)
+        return send_from_directory(dirname, filename, as_attachment=True)
+    except PermissionError:
+        return jsonify({"ok": False, "error": "权限不足"}), 403
+
+
 @app.route("/vnc")
 def vnc():
     ip, port, wsport, errors = validate_vnc_config()
@@ -561,6 +662,173 @@ def vnc():
 @app.route("/novnc/<path:filename>")
 def serve_novnc(filename):
     return send_from_directory(NOVNC_DIR, filename)
+
+
+@app.route("/files")
+def file_explorer():
+    return render_template("files.html")
+
+
+def format_size(bytes_val):
+    if bytes_val is None:
+        return "-"
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if bytes_val < 1024:
+            return f"{bytes_val:.1f} {unit}" if unit != "B" else f"{bytes_val} B"
+        bytes_val /= 1024
+    return f"{bytes_val:.1f} PB"
+
+
+def file_type_label(name, is_dir):
+    if is_dir:
+        return "文件夹" if platform.system() == "Windows" else "directory"
+    ext = os.path.splitext(name)[1].lower() if "." in name else ""
+    if not ext:
+        return "文件" if platform.system() == "Windows" else "file"
+    return ext[1:].upper() + " 文件"
+
+
+def list_dir(path):
+    try:
+        entries = []
+        for entry in os.scandir(path):
+            try:
+                st = entry.stat()
+                is_dir = entry.is_dir(follow_symlinks=False)
+                info = {
+                    "name": entry.name,
+                    "is_dir": is_dir,
+                    "size": st.st_size if not is_dir else None,
+                    "modified": datetime.datetime.fromtimestamp(st.st_mtime).isoformat(),
+                    "type": file_type_label(entry.name, is_dir),
+                }
+                if platform.system() != "Windows":
+                    mode = st.st_mode
+                    info["permission"] = stat.filemode(mode)
+                entries.append(info)
+            except (OSError, PermissionError):
+                continue
+        entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        return entries, None
+    except PermissionError:
+        return None, "权限不足"
+    except FileNotFoundError:
+        return None, "路径不存在"
+    except OSError as e:
+        return None, str(e)
+
+
+@app.route("/api/files")
+def api_files():
+    path = request.args.get("path", "")
+    if not path:
+        path = "/" if platform.system() != "Windows" else os.environ.get("SYSTEMDRIVE", "C:") + "\\"
+    entries, err = list_dir(path)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    return jsonify({"ok": True, "entries": entries, "path": os.path.abspath(path)})
+
+
+@app.route("/api/files/delete", methods=["POST"])
+def api_file_delete():
+    path = request.get_json(force=True).get("path", "")
+    if not path:
+        return jsonify({"ok": False, "error": "路径为空"}), 400
+    try:
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+        return jsonify({"ok": True})
+    except PermissionError:
+        return jsonify({"ok": False, "error": "权限不足"}), 403
+    except FileNotFoundError:
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/files/rename", methods=["POST"])
+def api_file_rename():
+    body = request.get_json(force=True)
+    old_path = body.get("path", "")
+    new_name = body.get("name", "")
+    if not old_path or not new_name:
+        return jsonify({"ok": False, "error": "参数不完整"}), 400
+    try:
+        parent = os.path.dirname(old_path)
+        new_path = os.path.join(parent, new_name)
+        if os.path.exists(new_path):
+            return jsonify({"ok": False, "error": "目标已存在"}), 409
+        os.rename(old_path, new_path)
+        return jsonify({"ok": True})
+    except PermissionError:
+        return jsonify({"ok": False, "error": "权限不足"}), 403
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/files/mkdir", methods=["POST"])
+def api_file_mkdir():
+    parent = request.get_json(force=True).get("path", "")
+    name = request.get_json(force=True).get("name", "")
+    if not parent or not name:
+        return jsonify({"ok": False, "error": "参数不完整"}), 400
+    try:
+        new_path = os.path.join(parent, name)
+        os.makedirs(new_path, exist_ok=False)
+        return jsonify({"ok": True})
+    except FileExistsError:
+        return jsonify({"ok": False, "error": "目录已存在"}), 409
+    except PermissionError:
+        return jsonify({"ok": False, "error": "权限不足"}), 403
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/files/create", methods=["POST"])
+def api_file_create():
+    parent = request.get_json(force=True).get("path", "")
+    name = request.get_json(force=True).get("name", "")
+    if not parent or not name:
+        return jsonify({"ok": False, "error": "参数不完整"}), 400
+    try:
+        new_path = os.path.join(parent, name)
+        if os.path.exists(new_path):
+            return jsonify({"ok": False, "error": "文件已存在"}), 409
+        open(new_path, 'w').close()
+        return jsonify({"ok": True})
+    except PermissionError:
+        return jsonify({"ok": False, "error": "权限不足"}), 403
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/files/upload", methods=["POST"])
+def api_file_upload():
+    parent = request.form.get("path", "")
+    is_dir = request.form.get("isDir", "0") == "1"
+    if not parent:
+        return jsonify({"ok": False, "error": "参数不完整"}), 400
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"ok": False, "error": "没有文件"}), 400
+    try:
+        for file in files:
+            if is_dir and file.filename:
+                # Preserve relative directory structure
+                rel_path = file.filename
+                dest = os.path.join(parent, rel_path)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                file.save(dest)
+            else:
+                dest = os.path.join(parent, file.filename)
+                file.save(dest)
+        return jsonify({"ok": True})
+    except PermissionError:
+        return jsonify({"ok": False, "error": "权限不足"}), 403
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":
