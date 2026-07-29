@@ -126,6 +126,9 @@ def compute_next_run(task):
     now = datetime.datetime.now()
     t = task["type"]
 
+    if t == "manual":
+        return None
+
     if t == "once":
         try:
             dt = datetime.datetime(
@@ -485,6 +488,20 @@ def api_update_task(task_id):
                 t["enabled"] = False
             save_tasks(data)
             return jsonify({"ok": True, "task": t})
+    return jsonify({"ok": False}), 404
+
+
+@app.route("/api/tasks/<task_id>/run", methods=["POST"])
+def api_run_task(task_id):
+    with _tasks_lock:
+        data = load_tasks()
+        for t in data["tasks"]:
+            if t["id"] != task_id:
+                continue
+            execute_task(t)
+            t["last_run"] = time.time()
+            save_tasks(data)
+            return jsonify({"ok": True, "message": "任务已执行"})
     return jsonify({"ok": False}), 404
 
 

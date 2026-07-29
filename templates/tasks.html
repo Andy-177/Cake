@@ -28,6 +28,7 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
 .badge-weekly{background:#dcfce7;color:#15803d}
 .badge-daily{background:#fef3c7;color:#b45309}
 .badge-countdown{background:#fce7f3;color:#be185d}
+.badge-manual{background:#fef9c3;color:#a16207}
 .task-command{margin-bottom:10px}
 .task-command code{display:block;font-size:11px;color:#666;background:#fafafa;padding:6px 8px;border:1px solid #eee;word-break:break-all;font-family:'Noto Sans SC',sans-serif}
 .task-info{font-size:11px;color:#999;line-height:1.8}
@@ -39,6 +40,8 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
 .task-actions .toggle-btn.off{background:#fee2e2;border-color:#ef4444;color:#dc2626}
 .task-actions .del-btn:hover{background:#fee2e2;color:#ef4444;border-color:#ef4444}
 .task-actions .edit-btn:hover{background:#dbeafe;color:#1d4ed8;border-color:#1d4ed8}
+.task-actions .run-btn{background:#dcfce7;border-color:#22c55e;color:#15803d;font-weight:600}
+.task-actions .run-btn:hover{background:#bbf7d0}
 .countdown-progress{margin-top:8px;height:3px;background:#eee;border-radius:2px;overflow:hidden}
 .countdown-progress .bar{height:100%;background:#06b6d4;border-radius:2px;transition:width 1s linear}
 .empty-state{padding:60px 20px;text-align:center;color:#999;font-size:13px;letter-spacing:.5px}
@@ -90,6 +93,7 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
       <option value="weekly">每周（周X/时/分/秒）</option>
       <option value="daily">每天（时/分/秒）</option>
       <option value="countdown">倒计时循环（秒）</option>
+      <option value="manual">手动（仅手动触发）</option>
     </select>
     <div id="onceFields">
       <label>日期</label>
@@ -162,7 +166,7 @@ function humanTime(iso){
 }
 
 function typeLabel(t){
-  var map={once:'单次',yearly:'每年',weekly:'每周',daily:'每天',countdown:'倒计时'};
+  var map={once:'单次',yearly:'每年',weekly:'每周',daily:'每天',countdown:'倒计时',manual:'手动'};
   return map[t]||t;
 }
 
@@ -177,11 +181,13 @@ function scheduleText(task){
   if(t==='weekly'){var w=['一','二','三','四','五','六'];return '每周'+w[task.weekday]+' '+pad0(task.hour)+':'+pad0(task.minute)+':'+pad0(task.second);}
   if(t==='daily')return '每天 '+pad0(task.hour)+':'+pad0(task.minute)+':'+pad0(task.second);
   if(t==='countdown'){var h=Math.floor(task.countdown_seconds/3600),m=Math.floor((task.countdown_seconds%3600)/60),s=task.countdown_seconds%60;return '每 '+h+'时 '+m+'分 '+s+'秒 循环';}
+  if(t==='manual')return '手动触发';
   return'';
 }
 
 function autoDelText(task){
   if(task.type==='once'&&task.auto_delete)return '（自动删除）';
+  if(task.type==='manual')return '仅手动触发';
   return '';
 }
 
@@ -193,11 +199,12 @@ function render(){
     if(!tasks||!tasks.length){g.innerHTML='<div class="empty-state">暂无任务计划，点击上方 "新建任务" 创建</div>';return;}
     var html='';
     tasks.forEach(function(t){
-      var nextStr=t.next_run_iso?humanTime(t.next_run_iso):'等待执行';
-      var lastStr=t.last_run_iso?humanTime(t.last_run_iso):'从未执行';
+      var isManual=t.type==='manual';
       var toggleClass=t.enabled?'off':'on';
       var toggleText=t.enabled?'禁用':'启用';
-      var running=t.enabled?'':'style="opacity:.45"';
+      var nextStr=isManual?'手动触发':(t.next_run_iso?humanTime(t.next_run_iso):'等待执行');
+      var lastStr=t.last_run_iso?humanTime(t.last_run_iso):'从未执行';
+      var running=isManual||t.enabled?'':'style="opacity:.45"';
       html+='<div class="task-card" data-id="'+t.id+'" '+running+'>'+
         '<div class="task-header">'+
           '<div class="task-name">'+escHtml(t.name||'未命名')+'</div>'+
@@ -206,12 +213,12 @@ function render(){
         '<div class="task-command"><code>'+escHtml(t.command)+'</code></div>'+
         '<div class="task-info">'+
           '时间: <span>'+scheduleText(t)+' '+autoDelText(t)+'</span><br>'+
-          '下次执行: <span id="nr-'+t.id+'">'+nextStr+'</span><br>'+
+          (isManual?'':'下次执行: <span id="nr-'+t.id+'">'+nextStr+'</span><br>')+
           '上次执行: <span>'+lastStr+'</span>'+
         '</div>'+
         (t.type==='countdown'&&t.next_run_iso?'<div class="countdown-progress" id="cp-'+t.id+'"><div class="bar" id="cb-'+t.id+'" style="width:0"></div></div>':'')+
         '<div class="task-actions">'+
-          '<button class="toggle-btn '+toggleClass+'" data-id="'+t.id+'">'+toggleText+'</button>'+
+          (isManual?'<button class="run-btn" data-id="'+t.id+'">运行</button>':'<button class="toggle-btn '+toggleClass+'" data-id="'+t.id+'">'+toggleText+'</button>')+
           '<button class="edit-btn" data-id="'+t.id+'">编辑</button>'+
           '<button class="del-btn" data-id="'+t.id+'">删除</button>'+
         '</div>'+
@@ -276,12 +283,13 @@ function setFormData(t){
 }
 
 function showFields(type){
+  var s=type==='manual'?'none':'';
   $('onceFields').style.display=type==='once'?'':'none';
   $('yearlyFields').style.display=type==='yearly'?'':'none';
   $('weeklyFields').style.display=type==='weekly'?'':'none';
   $('dailyFields').style.display='none';
-  $('timeFields').style.display=type==='countdown'?'none':'';
-  $('countdownFields').style.display=type==='countdown'?'':'none';
+  $('timeFields').style.display=type==='countdown'?'none':s;
+  $('countdownFields').style.display=type==='countdown'?s:'none';
 }
 
 $('f-type').addEventListener('change',function(){showFields(this.value);});
@@ -343,6 +351,11 @@ $('taskGrid').addEventListener('click',function(e){
       for(var i=0;i<tasks.length;i++){
         if(tasks[i].id===id){setFormData(tasks[i]);break;}
       }
+    });
+  }
+  if(e.target.classList.contains('run-btn')){
+    fetch('/api/tasks/'+id+'/run',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+      if(d.ok){render();}
     });
   }
 });
