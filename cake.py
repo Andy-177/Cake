@@ -16,9 +16,80 @@ import shutil
 import stat
 import mimetypes
 import psutil
-from flask import Flask, jsonify, render_template, request, redirect, send_from_directory, send_file, abort
+from flask import Flask, jsonify, render_template, request, redirect, send_from_directory, send_file, abort, session
 
 app = Flask(__name__)
+app.secret_key = os.urandom(32).hex()
+
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import base64 as b64
+
+_rsa_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_rsa_public = _rsa_private.public_key()
+_rsa_public_pem = _rsa_public.public_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo
+).decode()
+
+@app.route('/api/crypto-key')
+def crypto_key():
+    return jsonify({"ok": True, "key": _rsa_public_pem})
+
+@app.route('/api/crypto-session', methods=['POST'])
+def crypto_session():
+    data = request.get_json()
+    if not data or 'key' not in data:
+        return jsonify({"ok": False, "error": "Missing key"}), 400
+    try:
+        encrypted_key = b64.b64decode(data['key'])
+        aes_key = _rsa_private.decrypt(
+            encrypted_key,
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+        )
+        session['aes_key'] = b64.b64encode(aes_key).decode()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+CRYPTO_SKIP = ('/api/crypto-key', '/api/crypto-session')
+
+@app.before_request
+def decrypt_request():
+    if not request.path.startswith('/api/') or request.path in CRYPTO_SKIP:
+        return
+    aes_b64 = session.get('aes_key')
+    if not aes_b64:
+        return
+    if request.method in ('POST', 'PUT'):
+        raw = request.get_json(silent=True)
+        if raw and 'ct' in raw and 'nonce' in raw:
+            try:
+                key = b64.b64decode(aes_b64)
+                nonce = b64.b64decode(raw['nonce'])
+                ct = b64.b64decode(raw['ct'])
+                plain = AESGCM(key).decrypt(nonce, ct, None)
+                request._cached_json = (json.loads(plain), json.loads(plain))
+            except Exception:
+                return jsonify({"ok": False, "error": "Decryption failed"}), 400
+
+@app.after_request
+def encrypt_response(response):
+    if not request.path.startswith('/api/') or request.path in CRYPTO_SKIP:
+        return response
+    aes_b64 = session.get('aes_key')
+    if not aes_b64 or 'application/json' not in (response.content_type or ''):
+        return response
+    try:
+        key = b64.b64decode(aes_b64)
+        nonce = os.urandom(12)
+        ct = AESGCM(key).encrypt(nonce, response.get_data(), None)
+        response.set_data(json.dumps({"ct": b64.b64encode(ct).decode(), "nonce": b64.b64encode(nonce).decode()}))
+        response.content_type = 'application/json'
+    except Exception:
+        pass
+    return response
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 NOVNC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "noVNC")
