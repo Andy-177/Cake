@@ -105,8 +105,9 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
 .toast-ok{background:#22c55e}
 .toast-err{background:#ef4444}
 
-@media(max-width:900px){body{padding:16px}.proc-table{font-size:11px}.proc-table th,.proc-table td{padding:6px 8px}.col-perm{display:none}}
-@media(max-width:500px){.col-type{display:none}}
+@media(max-width:900px){body{padding:16px}.proc-table{font-size:11px}.proc-table th,.proc-table td{padding:6px 8px}.col-perm{display:none}.drive-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:700px){body{padding:12px}.topbar h1{font-size:14px}.toolbar{flex-wrap:wrap}.search{width:120px}.path-input{width:100%}.drive-grid{grid-template-columns:1fr}.drive-card .name{font-size:22px}.sidebar{width:200px;left:-220px}.proc-table,.proc-table thead,.proc-table tbody,.proc-table tr,.proc-table th,.proc-table td{display:block}.proc-table thead{display:none}.proc-table tr{background:#fff;border:1px solid #e5e5e5;padding:12px;margin-bottom:8px;cursor:pointer;transition:background .1s}.proc-table tr:hover{background:#dbeafe}.proc-table td{border:none;padding:3px 0;white-space:normal}.proc-table td:before{content:attr(data-label);display:inline-block;width:60px;font-size:10px;color:#999;letter-spacing:.5px;font-weight:500;flex-shrink:0}.proc-table .num{text-align:left}.proc-table .actions{display:flex;margin-top:6px;padding-top:6px;border-top:1px solid #eee}.proc-table .actions button{padding:4px 12px}.proc-table td[data-label="名称"]{font-size:13px;font-weight:600;color:#111}.proc-table td[data-label="名称"]:before{display:none}.col-type{display:none}}
+@media(max-width:500px){.upload-menu{right:auto;left:0}}
 </style>
 </head>
 <body>
@@ -161,6 +162,7 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
 
 <div id="computerView" style="display:none"></div>
 
+<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
 <table class="proc-table" id="fileTable">
   <thead>
     <tr>
@@ -270,21 +272,21 @@ function render(){
     return 0;
   });
   var html='';
-  if(!filtered.length){html='<tr><td colspan="6" class="empty">无文件</td></tr>';}
+  if(!filtered.length){html='<tr><td colspan="6" class="empty" data-label="">无文件</td></tr>';}
   filtered.forEach(function(e){
     var fullPath=isWin?currentPath+'\\'+e.name:currentPath+'/'+e.name;
     var isFav=getFavorites().indexOf(fullPath)>=0;
     var icon=e.is_dir?'<span class="dir-icon">📁</span>':'<span class="file-icon">📄</span>';
     var nameClass=e.is_dir?'dir':'';
     html+='<tr data-name="'+escAttr(e.name)+'" data-dir="'+e.is_dir+'">'+
-      '<td class="'+nameClass+'">'+
+      '<td class="'+nameClass+'" data-label="名称">'+
         '<span class="fav-star" data-path="'+escAttr(fullPath)+'">'+(isFav?'★':'☆')+'</span>'+
         icon+escHtml(e.name)+'</td>'+
-      '<td>'+fmtDate(e.modified)+'</td>'+
-      '<td class="col-type">'+escHtml(e.type)+'</td>'+
-      '<td class="num">'+fmtSize(e.size)+'</td>'+
-      (e.permission!==undefined?'<td class="col-perm"><span class="permission">'+escHtml(e.permission)+'</span></td>':'')+
-      '<td><div class="actions">'+
+      '<td data-label="修改日期">'+fmtDate(e.modified)+'</td>'+
+      '<td class="col-type" data-label="类型">'+escHtml(e.type)+'</td>'+
+      '<td class="num" data-label="大小">'+fmtSize(e.size)+'</td>'+
+      (e.permission!==undefined?'<td class="col-perm" data-label="权限"><span class="permission">'+escHtml(e.permission)+'</span></td>':'')+
+      '<td data-label="操作"><div class="actions">'+
         '<button class="down-btn" data-file="'+escAttr(e.name)+'">下载</button>'+
         '<button class="ren-btn" data-file="'+escAttr(e.name)+'">重命名</button>'+
         '<button class="del-btn" data-file="'+escAttr(e.name)+'">删除</button>'+
@@ -493,6 +495,14 @@ $('tbody').addEventListener('click',function(e){
     toggleFavorite(star.dataset.path);
     star.textContent=getFavorites().indexOf(star.dataset.path)>=0?'★':'☆';
     return;
+  }
+  // Card mode (small screen): single click to enter directory
+  if(window.innerWidth<=700){
+    var tr=e.target.closest('tr');
+    if(tr&&tr.dataset.dir==='true'&&!e.target.closest('button')){
+      var name=tr.dataset.name;
+      loadDir(isWin?currentPath+'\\'+name:currentPath+'/'+name);
+    }
   }
 });
 // Search
