@@ -107,6 +107,9 @@ DEFAULT_CONFIG = {
     "panel": {
         "ip": ["127.0.0.1"],
         "port": 8050
+    },
+    "security": {
+        "safety_warning": True
     }
 }
 
@@ -145,6 +148,18 @@ def load_panel_config():
     ips = panel.get("ip", ["127.0.0.1"])
     port = panel.get("port", 8050)
     return ips, port
+
+
+def load_security_config():
+    cfg = ensure_config()
+    sec = cfg.get("security", {})
+    return sec.get("safety_warning", True)
+
+
+@app.context_processor
+def inject_safety_warning():
+    show = load_security_config() and not request.is_secure
+    return {"safety_warning": show}
 
 
 @app.before_request
