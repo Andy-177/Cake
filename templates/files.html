@@ -53,14 +53,17 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
 .fav-remove{width:16px;flex-shrink:0;text-align:center;font-size:10px;color:#ccc;cursor:pointer;display:none;padding:2px 0}
 .sidebar .tree-item:hover .fav-remove{display:block}
 .fav-remove:hover{color:#ef4444}
-.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.toolbar .tb-row{display:flex;gap:8px;align-items:center;flex:1;min-width:0}
+.toolbar .tb-row:last-child{flex:0 1 auto}
+.toolbar .tb-row .path-input{flex:1;min-width:80px}
 .toolbar button{padding:6px 14px;font-size:11px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;cursor:pointer;letter-spacing:.5px;transition:all .2s;white-space:nowrap}
 .toolbar button:hover{background:#fafafa;border-color:#ccc}
 .toolbar .action-btn{background:#222;color:#fff;border-color:#222}
 .toolbar .action-btn:hover{opacity:.8;background:#222}
 .search{padding:6px 12px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;outline:none;transition:border-color .2s;width:200px}
 .search:focus{border-color:#999}
-.path-input{flex:1;padding:6px 12px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;outline:none;transition:border-color .2s;min-width:0}
+.path-input{padding:6px 12px;font-size:12px;font-family:inherit;border:1px solid #e5e5e5;background:#fff;outline:none;transition:border-color .2s;min-width:0}
 .path-input:focus{border-color:#999}
 .path-bar{display:flex;align-items:center;gap:4px;margin-bottom:8px;font-size:12px;color:#666;flex-wrap:wrap}
 .path-bar .seg{cursor:pointer;padding:4px 8px;color:#666;transition:all .15s;border-radius:2px}
@@ -106,7 +109,7 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
 .toast-err{background:#ef4444}
 
 @media(max-width:900px){body{padding:16px}.proc-table{font-size:11px}.proc-table th,.proc-table td{padding:6px 8px}.col-perm{display:none}.drive-grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:700px){body{padding:12px}.topbar h1{font-size:14px}.toolbar{flex-wrap:wrap}.search{width:120px}.path-input{width:100%}.drive-grid{grid-template-columns:1fr}.drive-card .name{font-size:22px}.sidebar{width:200px;left:-220px}.proc-table,.proc-table thead,.proc-table tbody,.proc-table tr,.proc-table th,.proc-table td{display:block}.proc-table thead{display:none}.proc-table tr{background:#fff;border:1px solid #e5e5e5;padding:12px;margin-bottom:8px;cursor:pointer;transition:background .1s}.proc-table tr:hover{background:#dbeafe}.proc-table td{border:none;padding:3px 0;white-space:normal}.proc-table td:before{content:attr(data-label);display:inline-block;width:60px;font-size:10px;color:#999;letter-spacing:.5px;font-weight:500;flex-shrink:0}.proc-table .num{text-align:left}.proc-table .actions{display:flex;margin-top:6px;padding-top:6px;border-top:1px solid #eee}.proc-table .actions button{padding:4px 12px}.proc-table td[data-label="名称"]{font-size:13px;font-weight:600;color:#111}.proc-table td[data-label="名称"]:before{display:none}.col-type{display:none}}
+@media(max-width:700px){body{padding:12px}.topbar h1{font-size:14px}.sidebar{width:200px;left:-220px}.drive-grid{grid-template-columns:1fr}.drive-card .name{font-size:22px}.toolbar .tb-row{flex-wrap:wrap}.toolbar .tb-row .path-input{min-width:120px}.search{width:100%}.tb-row+.tb-row{margin-top:4px}.tb-row:last-child{width:100%}.tb-row:last-child .search{flex:1;min-width:80px}.proc-table,.proc-table thead,.proc-table tbody,.proc-table tr,.proc-table th,.proc-table td{display:block}.proc-table thead{display:none}.proc-table tr{background:#fff;border:1px solid #e5e5e5;padding:12px;margin-bottom:8px;cursor:pointer;transition:background .1s}.proc-table tr:hover{background:#dbeafe}.proc-table td{border:none;padding:3px 0;white-space:normal}.proc-table td:before{content:attr(data-label);display:inline-block;width:60px;font-size:10px;color:#999;letter-spacing:.5px;font-weight:500;flex-shrink:0}.proc-table .num{text-align:left}.proc-table .actions{display:flex;margin-top:6px;padding-top:6px;border-top:1px solid #eee}.proc-table .actions button{padding:4px 12px}.proc-table td[data-label="名称"]{font-size:13px;font-weight:600;color:#111}.proc-table td[data-label="名称"]:before{display:none}.col-type{display:none}}
 @media(max-width:500px){.upload-menu{right:auto;left:0}}
 </style>
 </head>
@@ -136,23 +139,27 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
 <div class="path-bar" id="pathBar"></div>
 
 <div class="toolbar">
-  <button class="hamburger" id="menuBtn">☰</button>
-  <button id="backBtn" disabled>←</button>
-  <button id="fwdBtn" disabled>→</button>
-  <button id="pathToggleBtn" title="展开/收起路径">📂</button>
-  <input class="path-input" id="pathInput" placeholder="输入路径后按 Enter...">
-  <button id="refreshBtn" title="刷新">↻</button>
-  <input class="search" id="search" placeholder="搜索...">
-  <div style="position:relative">
-    <button id="uploadBtn">上传</button>
-    <div class="upload-menu" id="uploadMenu">
-      <div class="upload-opt" data-type="file">上传文件</div>
-      <div class="upload-opt" data-type="folder">上传文件夹</div>
-    </div>
-    <input type="file" id="fileInput" multiple style="display:none">
-    <input type="file" id="folderInput" webkitdirectory style="display:none">
+  <div class="tb-row">
+    <button class="hamburger" id="menuBtn">☰</button>
+    <button id="backBtn" disabled>←</button>
+    <button id="fwdBtn" disabled>→</button>
+    <button id="pathToggleBtn" title="展开/收起路径">📂</button>
+    <input class="path-input" id="pathInput" placeholder="输入路径后按 Enter...">
   </div>
-  <button id="toolsToggleBtn">工具箱 ▾</button>
+  <div class="tb-row">
+    <button id="refreshBtn" title="刷新">↻</button>
+    <input class="search" id="search" placeholder="搜索...">
+    <div style="position:relative">
+      <button id="uploadBtn">上传</button>
+      <div class="upload-menu" id="uploadMenu">
+        <div class="upload-opt" data-type="file">上传文件</div>
+        <div class="upload-opt" data-type="folder">上传文件夹</div>
+      </div>
+      <input type="file" id="fileInput" multiple style="display:none">
+      <input type="file" id="folderInput" webkitdirectory style="display:none">
+    </div>
+    <button id="toolsToggleBtn">工具箱 ▾</button>
+  </div>
 </div>
 <div class="tool-panel" id="toolPanel" style="display:none">
   <button id="mkdirBtn">新建文件夹</button>
