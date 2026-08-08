@@ -38,7 +38,7 @@ body{background:#f5f5f5;color:#222;font-family:'Noto Sans SC',sans-serif;padding
 </style>
 </head>
 <body>
-<div class="grid">{% if safety_warning %}<style>body{padding-top:52px!important}</style><div style="position:fixed;top:0;left:0;right:0;background:#dc2626;color:#fff;text-align:center;padding:10px 16px;font-size:12px;font-family:sans-serif;letter-spacing:1px;z-index:999">⚠ 未使用 HTTPS 连接，网页存在被篡改风险</div>{% endif %}
+<div class="grid">{% if safety_warning %}<style>body{padding-top:{{ safety_banner_height }}px!important}</style><div style="position:fixed;top:0;left:0;right:0;background:#dc2626;color:#fff;text-align:center;padding:6px 16px;font-size:12px;font-family:sans-serif;letter-spacing:1px;z-index:999;line-height:1.8">{% if https_warning %}⚠ 未使用 HTTPS 连接，网页存在被篡改风险 ⚠{% endif %}{% if https_warning and lockout_warning %}<br>{% endif %}{% if lockout_warning %}⚠ 未开启账户临时锁定，密码有被暴力破解的风险 ⚠{% endif %}</div>{% endif %}
   <div class="sys-card">
     <div>
       <div class="label">系统</div>

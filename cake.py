@@ -17,9 +17,9 @@ import stat
 import mimetypes
 import psutil
 from flask import Flask, jsonify, render_template, request, redirect, send_from_directory, send_file, abort, session
+from pam import verify_user, count_users
 
 app = Flask(__name__)
-app.secret_key = os.urandom(32).hex()
 
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
@@ -109,7 +109,18 @@ DEFAULT_CONFIG = {
         "port": 8050
     },
     "security": {
-        "safety_warning": True
+        "safety_warning": {
+            "https_safety_warning": True,
+            "lockout_safety_warning": True
+        },
+        "lockout": {
+            "max_attempts": 5,
+            "lockout_duration": 30,
+            "lockdown_max_attempts": 15
+        },
+        "lockdown": {
+            "max_attempts": 0
+        }
     }
 }
 
@@ -152,14 +163,103 @@ def load_panel_config():
 
 def load_security_config():
     cfg = ensure_config()
-    sec = cfg.get("security", {})
-    return sec.get("safety_warning", True)
+    sec = cfg.get("security", {}) or {}
+    sw = sec.get("safety_warning", True)
+    if isinstance(sw, dict):
+        https = bool(sw.get("https_safety_warning", True))
+        lockout = bool(sw.get("lockout_safety_warning", True))
+    elif sw is None:
+        https, lockout = True, True
+    else:
+        https, lockout = bool(sw), bool(sw)
+    return https, lockout
+
+
+def load_lockout_config():
+    cfg = ensure_config()
+    sec = cfg.get("security", {}) or {}
+    lock = sec.get("lockout", {}) or {}
+    try:
+        max_attempts = int(lock.get("max_attempts", 5))
+    except (TypeError, ValueError):
+        max_attempts = 5
+    try:
+        lockout_duration = int(lock.get("lockout_duration", 30))
+    except (TypeError, ValueError):
+        lockout_duration = 30
+    if max_attempts < 0:
+        max_attempts = 5
+    if lockout_duration < 0:
+        lockout_duration = 30
+    return max_attempts, lockout_duration
+
+
+def lockout_enabled():
+    max_attempts, lockout_duration = load_lockout_config()
+    return max_attempts > 0 and lockout_duration > 0
+
+
+def load_lockdown_config():
+    cfg = ensure_config()
+    sec = cfg.get("security", {}) or {}
+    lock = sec.get("lockdown", {}) or {}
+    try:
+        max_attempts = int(lock.get("max_attempts", 0))
+    except (TypeError, ValueError):
+        max_attempts = 0
+    if max_attempts < 0:
+        max_attempts = 0
+    return max_attempts
+
+
+def load_account_lockdown_config():
+    cfg = ensure_config()
+    sec = cfg.get("security", {}) or {}
+    lock = sec.get("lockout", {}) or {}
+    try:
+        max_attempts = int(lock.get("lockdown_max_attempts", 15))
+    except (TypeError, ValueError):
+        max_attempts = 15
+    if max_attempts < 0:
+        max_attempts = 15
+    return max_attempts
+
+
+def load_secret_key():
+    cfg = ensure_config()
+    sk = cfg.get("secret_key")
+    if not sk:
+        sk = os.urandom(32).hex()
+        cfg["secret_key"] = sk
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=4)
+        except Exception:
+            pass
+    return sk
+
+
+app.secret_key = load_secret_key()
 
 
 @app.context_processor
 def inject_safety_warning():
-    show = load_security_config() and not request.is_secure
-    return {"safety_warning": show}
+    https_on, lockout_on = load_security_config()
+    https_warning = https_on and not request.is_secure
+    lockout_warning = lockout_on and not lockout_enabled()
+    show = https_warning or lockout_warning
+    if https_warning and lockout_warning:
+        height = 76
+    elif show:
+        height = 52
+    else:
+        height = 0
+    return {
+        "safety_warning": show,
+        "https_warning": https_warning,
+        "lockout_warning": lockout_warning,
+        "safety_banner_height": height,
+    }
 
 
 @app.before_request
@@ -177,6 +277,19 @@ def check_ip():
     if remote and remote.startswith("::1") and ("::1" in ips or "127.0.0.1" in ips):
         return
     abort(403)
+
+
+AUTH_EXEMPT = ("/login", "/api/crypto-key", "/api/crypto-session", "/api/login")
+
+
+@app.before_request
+def require_login():
+    if request.path in AUTH_EXEMPT:
+        return
+    if "user" not in session:
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "未登录"}), 401
+        return redirect("/login")
 
 
 def _cleanup_websockify():
@@ -458,6 +571,108 @@ def get_sys_info():
         "uptime": uptime_str,
         "processes": len(psutil.pids()),
     }
+
+
+@app.route("/login")
+def login():
+    if "user" in session:
+        return redirect("/")
+    return render_template("login.html", no_accounts=count_users() == 0)
+
+
+_lockdown_triggered = False
+_lockdown_failures = {}
+_locked_accounts = set()
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    global _lockdown_triggered
+    body = request.get_json(force=True, silent=True) or {}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    max_attempts, lockout_duration = load_lockout_config()
+    lock_enabled = max_attempts > 0 and lockout_duration > 0
+    lockdown_max = load_lockdown_config()
+    account_lockdown_max = load_account_lockdown_config()
+
+    if _lockdown_triggered:
+        return jsonify({"ok": False, "error": "系统已进入安全锁定状态，已拒绝所有登录请求，请重启服务后重试"})
+
+    if username in _locked_accounts:
+        return jsonify({"ok": False, "error": "该账户输错密码次数过多，已被锁定，请重启服务后重试"})
+
+    if not username or not password:
+        return jsonify({"ok": False, "error": "请输入用户名和密码"})
+
+    if lock_enabled:
+        remaining = _lockout_status(username, max_attempts, lockout_duration)
+        if remaining:
+            return jsonify({"ok": False, "error": "尝试次数过多，账号已临时锁定，请在 {} 秒后重试".format(remaining)})
+
+    if verify_user(username, password):
+        if lock_enabled:
+            _login_failures.pop(username, None)
+        _lockdown_failures.pop(username, None)
+        session["user"] = username
+        return jsonify({"ok": True, "user": username})
+
+    if lockdown_max > 0 or account_lockdown_max > 0:
+        count = _lockdown_failures.get(username, 0) + 1
+        _lockdown_failures[username] = count
+        if account_lockdown_max > 0 and count >= account_lockdown_max:
+            _locked_accounts.add(username)
+            return jsonify({"ok": False, "error": "该账户输错密码次数过多，已被锁定，请重启服务后重试"})
+        if lockdown_max > 0 and count > lockdown_max:
+            _lockdown_triggered = True
+            return jsonify({"ok": False, "error": "系统已进入安全锁定状态，已拒绝所有登录请求，请重启服务后重试"})
+
+    if lock_enabled:
+        _login_failures.setdefault(username, []).append(time.time())
+        remaining = _lockout_status(username, max_attempts, lockout_duration)
+        if remaining:
+            return jsonify({"ok": False, "error": "密码错误次数过多，账号已临时锁定，请在 {} 秒后重试".format(remaining)})
+    return jsonify({"ok": False, "error": "用户名或密码错误"})
+
+
+_login_failures = {}
+
+
+def _prune_login_failures(now, lockout_duration):
+    if len(_login_failures) <= 10000:
+        return
+    for username in list(_login_failures):
+        recent = [t for t in _login_failures[username] if now - t < lockout_duration]
+        if recent:
+            _login_failures[username] = recent
+        else:
+            _login_failures.pop(username, None)
+
+
+def _lockout_status(username, max_attempts, lockout_duration):
+    now = time.time()
+    recent = [t for t in _login_failures.get(username, []) if now - t < lockout_duration]
+    if recent:
+        _login_failures[username] = recent
+    else:
+        _login_failures.pop(username, None)
+    _prune_login_failures(now, lockout_duration)
+    if len(recent) >= max_attempts:
+        remaining = int(lockout_duration - (now - recent[0])) + 1
+        return max(remaining, 1)
+    return None
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
 
 
 @app.route("/")
